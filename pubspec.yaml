@@ -1,0 +1,49 @@
+name: msg_bypas
+description: Emergency accident detection SMS app with automatic location sharing
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  sensors_plus: ^4.0.2
+  noise_meter: ^4.0.1
+  audioplayers: ^5.2.1
+
+  # SMS functionality
+  telephony: ^0.2.0
+
+  # Location services
+  geolocator: ^10.1.0
+  geocoding: ^2.1.1
+
+  # Permissions
+  permission_handler: ^10.0.0
+
+  # Local storage
+  shared_preferences: ^2.2.2
+
+  url_launcher: ^6.2.0
+  device_info_plus: ^9.1.0
+  android_intent_plus: ^4.0.3
+
+  # Date formatting
+  intl: ^0.18.1
+
+  # UI
+  cupertino_icons: ^1.0.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/images/

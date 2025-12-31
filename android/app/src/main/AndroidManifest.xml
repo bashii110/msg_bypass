@@ -1,6 +1,13 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
 
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
+
+
     <!-- Noise Permissions -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
@@ -28,10 +35,14 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
+    <!-- Sounds like alarm-->
+    <uses-permission android:name="android.permission.VIBRATE"/>
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
+
     <uses-feature android:name="android.hardware.telephony" android:required="false" />
 
     <application
-        android:label="msg_bypas"
+        android:label="Rescue Me"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:requestLegacyExternalStorage="true"
@@ -67,6 +78,12 @@
                 <data android:scheme="smsto" />
             </intent-filter>
         </activity>
+
+        <!-- OVERLAY WINDOW SERVICE -->
+        <service
+            android:name="flutter.overlay.window.OverlayService"
+            android:exported="false"
+            android:foregroundServiceType="location" />
 
         <!-- Foreground Service for Background Monitoring -->
         <service

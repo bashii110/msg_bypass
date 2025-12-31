@@ -1,11 +1,17 @@
+import 'dart:async';
+import 'dart:math';
 import 'package:flutter/material.dart';
-import 'package:msg_bypas/screens/sensors_data.dart';
+import 'package:flutter/services.dart';
 import 'package:msg_bypas/screens/settings_scrren.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import '../services/accident_service.dart';
+import 'package:sensors_plus/sensors_plus.dart';
+import 'package:noise_meter/noise_meter.dart';
+import 'package:flutter_ringtone_player/flutter_ringtone_player.dart';
 import '../services/sms_service.dart';
-import '../services/oppo_vivo_helper.dart';
-import 'msg_screen.dart';
+
+import 'emergencycontactscreen.dart';
+
+import 'sos_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({Key? key}) : super(key: key);
@@ -14,183 +20,323 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
-  final AccidentDetectionService _detectionService = AccidentDetectionService();
+class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   bool _isMonitoring = false;
-  String _emergencyNumber = '';
-  String _emergencyName = '';
   bool _isLoading = false;
-  bool _isRestrictedDevice = false;
-  String _manufacturer = '';
+  bool _isAccidentDetected = false;
+  bool _isAlarmPlaying = false;
+
+  double _accelerateX = 0.0, _accelerateY = 0.0, _accelerateZ = 0.0;
+  double _gyroscopeX = 0.0, _gyroscopeY = 0.0, _gyroscopeZ = 0.0;
+  double _latestDB = 0.0;
+
+  late NoiseMeter _noiseMeter;
+  StreamSubscription<NoiseReading>? _noiseSubscription;
+  StreamSubscription<AccelerometerEvent>? _accelerometerSubscription;
+  StreamSubscription<GyroscopeEvent>? _gyroscopeSubscription;
+
+  int _highAccelerationCount = 0;
+  int _highNoiseCount = 0;
+  final List<double> _recentAccelerations = [];
+
+  static const double HIGH_ACCELERATION_THRESHOLD = 20.0;
+  static const double MEDIUM_ACCELERATION_THRESHOLD = 15.0;
+  static const double HIGH_NOISE_THRESHOLD = 75.0;
+  static const double MEDIUM_NOISE_THRESHOLD = 70.0;
+  static const double GYROSCOPE_THRESHOLD = 3.0;
+  static const int REQUIRED_SAMPLES = 2;
+  static const int SMOOTH_WINDOW = 5;
+  static const int ALARM_DURATION = 30;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _noiseMeter = NoiseMeter();
     _loadSettings();
-    _checkDevice();
   }
 
   @override
   void dispose() {
-    _detectionService.dispose();
+    WidgetsBinding.instance.removeObserver(this);
+    _stopMonitoring();
+    FlutterRingtonePlayer().stop();
     super.dispose();
-  }
-
-  Future<void> _checkDevice() async {
-    final isRestricted = await OppoVivoHelper.isRestrictedDevice();
-    final manufacturer = await OppoVivoHelper.getManufacturer();
-
-    setState(() {
-      _isRestrictedDevice = isRestricted;
-      _manufacturer = manufacturer;
-    });
-
-    // Show setup dialog if needed
-    if (isRestricted) {
-      final prefs = await SharedPreferences.getInstance();
-      final hasShownGuide = prefs.getBool('home_device_setup_shown') ?? false;
-
-      if (!hasShownGuide && mounted) {
-        Future.delayed(const Duration(seconds: 1), () {
-          if (mounted) {
-            _showDeviceSetupDialog();
-            prefs.setBool('home_device_setup_shown', true);
-          }
-        });
-      }
-    }
-  }
-
-  void _showDeviceSetupDialog() {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Row(
-          children: [
-            const Icon(Icons.warning_amber, color: Colors.orange, size: 28),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text('${_manufacturer.toUpperCase()} Device Setup'),
-            ),
-          ],
-        ),
-        content: SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Text(
-                '⚠️ CRITICAL FOR EMERGENCY ALERTS ⚠️\n',
-                style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  color: Colors.red,
-                  fontSize: 14,
-                ),
-              ),
-              Text(
-                OppoVivoHelper.getManufacturerSpecificInstructions(
-                    _manufacturer),
-                style: const TextStyle(fontSize: 13),
-              ),
-              const SizedBox(height: 16),
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.red.shade50,
-                  border: Border.all(color: Colors.red.shade300, width: 2),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Row(
-                  children: [
-                    Icon(Icons.error, color: Colors.red.shade700, size: 24),
-                    const SizedBox(width: 8),
-                    const Expanded(
-                      child: Text(
-                        'Without these settings, SMS may only open your messaging app instead of sending automatically!',
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('I\'ll Do It Later'),
-          ),
-          ElevatedButton.icon(
-            onPressed: () async {
-              Navigator.of(ctx).pop();
-
-              bool opened = await OppoVivoHelper.openAutoStartSettings();
-
-              if (!opened) {
-                const packageName =
-                    'com.buxhiisd.msg_bypas'; // Replace with your package
-                await OppoVivoHelper.openAppSettings(packageName);
-              }
-            },
-            icon: const Icon(Icons.settings),
-            label: const Text('Open Settings'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.orange,
-              foregroundColor: Colors.white,
-            ),
-          ),
-        ],
-      ),
-    );
   }
 
   Future<void> _loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
-      _emergencyNumber = prefs.getString('emergency_number') ?? '';
-      _emergencyName = prefs.getString('emergency_name') ?? 'Emergency Contact';
       _isMonitoring = prefs.getBool('monitoring_enabled') ?? false;
     });
+    if (_isMonitoring) _startMonitoring();
+  }
 
+  void _startMonitoring() {
     if (_isMonitoring) {
-      _detectionService.startMonitoring();
+      try {
+        _noiseSubscription = _noiseMeter.noise.listen((reading) {
+          if (mounted) {
+            _latestDB = reading.meanDecibel;
+            if (!_isAlarmPlaying) _checkForAccident();
+          }
+        });
+      } catch (e) {
+        print('Noise error: $e');
+      }
+
+      _accelerometerSubscription = accelerometerEvents.listen((event) {
+        _accelerateX = event.x;
+        _accelerateY = event.y;
+        _accelerateZ = event.z;
+        if (!_isAlarmPlaying) _checkForAccident();
+      });
+
+      _gyroscopeSubscription = gyroscopeEvents.listen((event) {
+        _gyroscopeX = event.x;
+        _gyroscopeY = event.y;
+        _gyroscopeZ = event.z;
+      });
+    }
+  }
+
+  void _stopMonitoring() {
+    _noiseSubscription?.cancel();
+    _accelerometerSubscription?.cancel();
+    _gyroscopeSubscription?.cancel();
+  }
+
+  void _checkForAccident() {
+    if (_isAccidentDetected || !_isMonitoring) return;
+
+    double accelerationMagnitude = sqrt(_accelerateX * _accelerateX +
+        _accelerateY * _accelerateY +
+        _accelerateZ * _accelerateZ);
+
+    double gyroscopeMagnitude = sqrt(_gyroscopeX * _gyroscopeX +
+        _gyroscopeY * _gyroscopeY +
+        _gyroscopeZ * _gyroscopeZ);
+
+    _recentAccelerations.add(accelerationMagnitude);
+    if (_recentAccelerations.length > SMOOTH_WINDOW) {
+      _recentAccelerations.removeAt(0);
+    }
+
+    if (_recentAccelerations.isEmpty) return;
+
+    double avgAccel = _recentAccelerations.reduce((a, b) => a + b) / _recentAccelerations.length;
+
+    if (avgAccel < 10.0) return;
+    if (gyroscopeMagnitude < 0.3) return;
+
+    if (avgAccel > MEDIUM_ACCELERATION_THRESHOLD) {
+      _highAccelerationCount++;
+    } else {
+      _highAccelerationCount = 0;
+    }
+
+    if (_latestDB > MEDIUM_NOISE_THRESHOLD) {
+      _highNoiseCount++;
+    } else {
+      _highNoiseCount = 0;
+    }
+
+    bool highImpact = avgAccel > HIGH_ACCELERATION_THRESHOLD && _highAccelerationCount >= REQUIRED_SAMPLES;
+    bool impactWithNoise = _highAccelerationCount >= REQUIRED_SAMPLES && _highNoiseCount >= REQUIRED_SAMPLES;
+    bool noiseWithImpact = _latestDB > HIGH_NOISE_THRESHOLD && avgAccel > MEDIUM_ACCELERATION_THRESHOLD;
+    bool rollover = gyroscopeMagnitude > GYROSCOPE_THRESHOLD && _highAccelerationCount >= REQUIRED_SAMPLES;
+
+    if (highImpact || impactWithNoise || noiseWithImpact || rollover) {
+      _triggerAccident();
+    }
+  }
+
+  void _triggerAccident() {
+    _isAccidentDetected = true;
+    _highAccelerationCount = 0;
+    _highNoiseCount = 0;
+    _showAccidentDialog();
+  }
+
+  Future<void> _startAlarm() async {
+    _isAlarmPlaying = true;
+    try {
+      await FlutterRingtonePlayer().playAlarm(looping: true, volume: 1.0, asAlarm: true);
+      HapticFeedback.heavyImpact();
+    } catch (e) {
+      print('Alarm error: $e');
+    }
+  }
+
+  Future<void> _stopAlarm() async {
+    _isAlarmPlaying = false;
+    try {
+      await FlutterRingtonePlayer().stop();
+    } catch (e) {
+      print('Stop error: $e');
+    }
+  }
+
+  void _showAccidentDialog() async {
+    int remainingSeconds = ALARM_DURATION;
+    bool dismissed = false;
+    Timer? countdownTimer;
+
+    await _startAlarm();
+
+    if (!mounted) return;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) {
+          countdownTimer ??= Timer.periodic(const Duration(seconds: 1), (timer) async {
+              if (dismissed) {
+                timer.cancel();
+                return;
+              }
+
+              remainingSeconds--;
+              setDialogState(() {});
+
+              if (remainingSeconds <= 0) {
+                timer.cancel();
+                await _sendEmergencySMS();
+                await _stopAlarm();
+
+                if (Navigator.canPop(dialogContext)) {
+                  Navigator.of(dialogContext).pop();
+                }
+                if (mounted) {
+                  Navigator.push(context, MaterialPageRoute(builder: (_) => const SosScreen()));
+                }
+                setState(() => _isAccidentDetected = false);
+              }
+            });
+
+          return PopScope(
+            canPop: false,
+            child: AlertDialog(
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              title: Row(
+                children: [
+                  Icon(Icons.warning_amber_rounded, color: Colors.red.shade700, size: 36),
+                  const SizedBox(width: 12),
+                  const Expanded(
+                    child: Text('🚨 ACCIDENT!', style: TextStyle(color: Colors.red, fontSize: 22, fontWeight: FontWeight.bold)),
+                  ),
+                ],
+              ),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text('Emergency contacts\nwill be notified in:', textAlign: TextAlign.center,
+                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 24),
+                  Container(
+                    width: 140,
+                    height: 140,
+                    decoration: BoxDecoration(
+                      color: Colors.red.shade50,
+                      shape: BoxShape.circle,
+                      border: Border.all(color: Colors.red, width: 4),
+                      boxShadow: [BoxShadow(color: Colors.red.withOpacity(0.3), blurRadius: 20, spreadRadius: 5)],
+                    ),
+                    child: Center(
+                      child: Text('$remainingSeconds', style: TextStyle(fontSize: 56, fontWeight: FontWeight.bold, color: Colors.red.shade700)),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Text('seconds', style: TextStyle(fontSize: 16, color: Colors.grey.shade600, fontWeight: FontWeight.w500)),
+                ],
+              ),
+              actions: [
+                Column(
+                  children: [
+                    SizedBox(
+                      width: double.infinity,
+                      height: 50,
+                      child: ElevatedButton.icon(
+                        onPressed: () async {
+                          dismissed = true;
+                          countdownTimer?.cancel();
+                          await _stopAlarm();
+                          Navigator.of(dialogContext).pop();
+                          setState(() => _isAccidentDetected = false);
+                        },
+                        icon: const Icon(Icons.check_circle, size: 24),
+                        label: const Text("I'M SAFE", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.green,
+                          foregroundColor: Colors.white,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    SizedBox(
+                      width: double.infinity,
+                      height: 50,
+                      child: ElevatedButton.icon(
+                        onPressed: () async {
+                          dismissed = true;
+                          countdownTimer?.cancel();
+                          await _stopAlarm();
+                          Navigator.of(dialogContext).pop();
+                          await _sendEmergencySMS();
+                          Navigator.push(context, MaterialPageRoute(builder: (_) => const SosScreen()));
+                          setState(() => _isAccidentDetected = false);
+                        },
+                        icon: const Icon(Icons.emergency, size: 24),
+                        label: const Text('SEND SOS NOW', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.red,
+                          foregroundColor: Colors.white,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Future<void> _sendEmergencySMS() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final contactsJson = prefs.getStringList('emergency_contacts') ?? [];
+
+      if (contactsJson.isEmpty) return;
+
+      for (String contactJson in contactsJson) {
+        final parts = contactJson.split('|');
+        if (parts.length >= 2) {
+          await SMSService.sendEmergencySMS(parts[1]);
+          await Future.delayed(const Duration(milliseconds: 500));
+        }
+      }
+    } catch (e) {
+      print('SMS error: $e');
     }
   }
 
   Future<void> _toggleMonitoring() async {
     setState(() => _isMonitoring = !_isMonitoring);
-
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('monitoring_enabled', _isMonitoring);
 
     if (_isMonitoring) {
-      _detectionService.startMonitoring();
+      _startMonitoring();
       _showSnackBar('Accident detection started', Colors.green);
     } else {
-      _detectionService.stopMonitoring();
+      _stopMonitoring();
       _showSnackBar('Accident detection stopped', Colors.orange);
-    }
-  }
-
-  Future<void> _sendTestAlert() async {
-    setState(() => _isLoading = true);
-
-    try {
-      bool sent = await SMSService.sendQuickEmergencySMS(_emergencyNumber);
-
-      if (sent) {
-        _showSnackBar('Test alert sent successfully!', Colors.green);
-      } else {
-        _showSnackBar('Failed to send test alert', Colors.red);
-      }
-    } catch (e) {
-      _showSnackBar('Error: $e', Colors.red);
-    } finally {
-      setState(() => _isLoading = false);
     }
   }
 
@@ -199,20 +345,13 @@ class _HomeScreenState extends State<HomeScreen> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Send Emergency Alert?'),
-        content: Text(
-            'This will send an emergency SMS with your location to $_emergencyName.'),
+        content: const Text('Send emergency SMS with location to all contacts?'),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('Cancel'),
-          ),
+          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
           ElevatedButton(
             onPressed: () => Navigator.of(ctx).pop(true),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.red,
-              foregroundColor: Colors.white,
-            ),
-            child: const Text('Send Alert'),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
+            child: const Text('Send'),
           ),
         ],
       ),
@@ -220,18 +359,13 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (confirm == true) {
       setState(() => _isLoading = true);
-
       try {
-        bool sent = await SMSService.sendEmergencySMS(_emergencyNumber);
-
-        if (sent) {
-          _showSnackBar('Emergency alert sent!', Colors.green);
-        } else {
-          _showSnackBar('Failed to send alert', Colors.red);
-        }
+        await _sendEmergencySMS();
+        setState(() => _isLoading = false);
+        if (!mounted) return;
+        Navigator.push(context, MaterialPageRoute(builder: (_) => const SosScreen()));
       } catch (e) {
         _showSnackBar('Error: $e', Colors.red);
-      } finally {
         setState(() => _isLoading = false);
       }
     }
@@ -239,11 +373,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _showSnackBar(String message, Color color) {
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: color,
-        duration: const Duration(seconds: 3),
-      ),
+      SnackBar(content: Text(message), backgroundColor: color, duration: const Duration(seconds: 3)),
     );
   }
 
@@ -251,149 +381,71 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Emergency SMS'),
+        title: const Text('Rescue Me'),
         centerTitle: true,
+        backgroundColor: Colors.blueAccent,
         actions: [
           IconButton(
             icon: const Icon(Icons.settings),
             onPressed: () async {
-              await Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const SettingsScreen()),
-              );
+              await Navigator.push(context, MaterialPageRoute(builder: (_) => const SettingsScreen()));
               _loadSettings();
             },
           ),
         ],
       ),
-      body: Column(
-        children: [
-          // Warning banner for restricted devices
-          if (_isRestrictedDevice)
-            Material(
-              color: Colors.orange.shade100,
-              child: InkWell(
-                onTap: _showDeviceSetupDialog,
-                child: Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(12),
-                  child: Row(
-                    children: [
-                      Icon(Icons.warning_amber, color: Colors.orange.shade900),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              '${_manufacturer.toUpperCase()} Device',
-                              style: TextStyle(
-                                color: Colors.orange.shade900,
-                                fontWeight: FontWeight.bold,
-                                fontSize: 13,
-                              ),
-                            ),
-                            Text(
-                              'Tap here for required settings',
-                              style: TextStyle(
-                                color: Colors.orange.shade800,
-                                fontSize: 11,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      Icon(
-                        Icons.arrow_forward_ios,
-                        color: Colors.orange.shade900,
-                        size: 16,
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          Expanded(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  _buildStatusCard(),
-                  const SizedBox(height: 16),
-                  _buildEmergencyContactCard(),
-                  const SizedBox(height: 16),
-                  _buildQuickActionsCard(),
-                  const SizedBox(height: 16),
-                  _sensorsButton(),
-                  const SizedBox(height: 16),
-                  _buildInfoCard(),
-                ],
-              ),
-            ),
-          ),
-        ],
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _buildStatusCard(),
+            const SizedBox(height: 16),
+            _buildEmergencyContactCard(),
+            const SizedBox(height: 16),
+            _buildTestModeCard(),
+            const SizedBox(height: 16),
+            _buildInfoCard(),
+            const SizedBox(height: 80),
+          ],
+        ),
       ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _isLoading ? null : _sendManualAlert,
         backgroundColor: Colors.red,
         icon: _isLoading
-            ? const SizedBox(
-                width: 20,
-                height: 20,
-                child: CircularProgressIndicator(
-                  color: Colors.white,
-                  strokeWidth: 2,
-                ),
-              )
+            ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
             : const Icon(Icons.emergency),
         label: const Text('SEND SOS'),
       ),
     );
   }
 
-  //Method for active monitering
   Widget _buildStatusCard() {
     return Card(
+      color: Colors.blueAccent,
       elevation: 4,
       child: Padding(
         padding: const EdgeInsets.all(20),
         child: Column(
           children: [
-            Icon(
-              _isMonitoring ? Icons.sensors : Icons.sensors_off,
-              size: 64,
-              color: _isMonitoring ? Colors.green : Colors.grey,
-            ),
+            Icon(_isMonitoring ? Icons.sensors : Icons.sensors_off, size: 64, color: _isMonitoring ? Colors.green : Colors.grey),
             const SizedBox(height: 16),
-            Text(
-              _isMonitoring ? 'Monitoring Active' : 'Monitoring Inactive',
-              style: const TextStyle(
-                fontSize: 24,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
+            Text(_isMonitoring ? 'Monitoring Active' : 'Monitoring Inactive',
+                style: const TextStyle(color: Colors.white ,fontSize: 24, fontWeight: FontWeight.bold)),
             const SizedBox(height: 8),
-            Text(
-              _isMonitoring
-                  ? 'Accident detection is running'
-                  : 'Tap below to start monitoring',
-              style: TextStyle(
-                color: Colors.grey.shade600,
-                fontSize: 14,
-              ),
-            ),
+            Text(_isMonitoring ? 'Accident detection running' : 'Tap below to start',
+                style:const TextStyle(color: Colors.white, fontSize: 14)),
             const SizedBox(height: 20),
             SizedBox(
               width: double.infinity,
               child: ElevatedButton.icon(
                 onPressed: _toggleMonitoring,
                 icon: Icon(_isMonitoring ? Icons.stop : Icons.play_arrow),
-                label: Text(
-                    _isMonitoring ? 'Stop Monitoring' : 'Start Monitoring'),
+                label: Text(_isMonitoring ? 'Stop Monitoring' : 'Start Monitoring'),
                 style: ElevatedButton.styleFrom(
                   padding: const EdgeInsets.symmetric(vertical: 16),
-                  backgroundColor: _isMonitoring ? Colors.orange : Colors.green,
+                  backgroundColor: _isMonitoring ? Colors.redAccent : Colors.green,
                   foregroundColor: Colors.white,
                 ),
               ),
@@ -404,107 +456,75 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  //emergency Contact method
   Widget _buildEmergencyContactCard() {
-    return Card(
-      elevation: 2,
-      child: ListTile(
-        leading: CircleAvatar(
-          backgroundColor: Theme.of(context).primaryColor,
-          child: const Icon(Icons.person, color: Colors.white),
-        ),
-        title: Text(
-          _emergencyName,
-          style: const TextStyle(fontWeight: FontWeight.bold),
-        ),
-        subtitle: Text(_emergencyNumber),
-        trailing: IconButton(
-          icon: const Icon(Icons.edit),
-          onPressed: () async {
-            await Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const SettingsScreen()),
-            );
-            _loadSettings();
-          },
-        ),
-      ),
+    return FutureBuilder<int>(
+      future: _getContactCount(),
+      builder: (context, snapshot) {
+        final contactCount = snapshot.data ?? 0;
+        return Card(
+          elevation: 2,
+          child: ListTile(
+            leading: CircleAvatar(
+              backgroundColor: contactCount > 0 ? Colors.green : Colors.orange,
+              child: Text('$contactCount', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+            ),
+            title: Text(contactCount > 0 ? '$contactCount Contact${contactCount > 1 ? 's' : ''}' : 'No Contacts',
+                style: const TextStyle(fontWeight: FontWeight.bold)),
+            subtitle: Text(contactCount > 0 ? 'Will receive alerts' : 'Tap to add'),
+            trailing: const Icon(Icons.arrow_forward_ios),
+            onTap: () async {
+              await Navigator.push(context, MaterialPageRoute(builder: (_) => const EmergencyContactsScreen()));
+              setState(() {});
+            },
+          ),
+        );
+      },
     );
   }
 
-  //Method for quick actions
-  Widget _buildQuickActionsCard() {
+  Future<int> _getContactCount() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      return (prefs.getStringList('emergency_contacts') ?? []).length;
+    } catch (e) {
+      return 0;
+    }
+  }
+
+  Widget _buildTestModeCard() {
     return Card(
-      elevation: 2,
+      elevation: 3,
+      color: Colors.orange.shade50,
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              'Quick Actions',
-              style: TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            const SizedBox(height: 12),
             Row(
               children: [
-                Expanded(
-                  child: ElevatedButton.icon(
-                    onPressed: _isLoading ? null : _sendTestAlert,
-                    icon: const Icon(Icons.send),
-                    label: const Text('Test Alert'),
-                    style: ElevatedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: ElevatedButton.icon(
-                    onPressed: () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                            builder: (_) => const MessagesScreen()),
-                      );
-                    },
-                    icon: const Icon(Icons.message),
-                    label: const Text('Messages'),
-                    style: ElevatedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                    ),
-                  ),
-                ),
+                const Icon(Icons.info_outline, color: Colors.orange),
+                const SizedBox(width: 8),
+                const Text("Detection Thresholds (TEST MODE):",
+                    style: TextStyle(fontWeight: FontWeight.bold, color: Colors.orange)),
               ],
             ),
+            const SizedBox(height: 6),
+            Text("• Severe impact: > ${HIGH_ACCELERATION_THRESHOLD.toStringAsFixed(1)} m/s² (${REQUIRED_SAMPLES} readings)"),
+            Text("• Loud noise: > ${HIGH_NOISE_THRESHOLD.toStringAsFixed(1)} dB"),
+            Text("• Rollover: > ${GYROSCOPE_THRESHOLD.toStringAsFixed(1)} rad/s rotation"),
+            const Text("• Combined sustained impact + noise triggers detection"),
+            const SizedBox(height: 10),
+            const Text("✅ Using system alarm sound - guaranteed to work!",
+                style: TextStyle(fontWeight: FontWeight.bold, color: Colors.green, fontSize: 12)),
+            const SizedBox(height: 4),
+            const Text("TIP: Shake your phone vigorously or make a loud noise to test!",
+                style: TextStyle(fontStyle: FontStyle.italic, color: Colors.orange, fontSize: 12)),
           ],
         ),
       ),
     );
   }
 
-  //Sensors Button
-  Widget _sensorsButton() {
-    return SizedBox(
-      width: double.infinity,
-      // height: 20,
-      child: FilledButton(
-          onPressed: () {
-            Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (context) => const SosHelp(),
-              ),
-            );
-          },
-          child: const Text("See Sensor Data")),
-    );
-  }
-
-  //Information card
   Widget _buildInfoCard() {
     return Card(
       elevation: 2,
@@ -518,22 +538,15 @@ class _HomeScreenState extends State<HomeScreen> {
               children: [
                 Icon(Icons.info_outline, color: Colors.blue.shade700),
                 const SizedBox(width: 8),
-                Text(
-                  'How It Works',
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.blue.shade900,
-                  ),
-                ),
+                Text('How It Works', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.blue.shade900)),
               ],
             ),
             const SizedBox(height: 12),
-            _buildInfoItem('• Monitors device sensors for sudden impacts'),
-            _buildInfoItem('• Automatically detects potential accidents'),
-            _buildInfoItem('• Sends SMS with your GPS location'),
-            _buildInfoItem('• Includes Google Maps link for quick navigation'),
-            _buildInfoItem('• Works in background with monitoring enabled'),
+            _buildInfoItem('• Monitors sensors for sudden impacts'),
+            _buildInfoItem('• Automatically detects accidents'),
+            _buildInfoItem('• Sends SMS with GPS location'),
+            _buildInfoItem('• Includes Google Maps link'),
+            _buildInfoItem('• Works while app is open'),
           ],
         ),
       ),
@@ -543,13 +556,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _buildInfoItem(String text) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Text(
-        text,
-        style: TextStyle(
-          color: Colors.blue.shade900,
-          fontSize: 13,
-        ),
-      ),
+      child: Text(text, style: TextStyle(color: Colors.blue.shade900, fontSize: 13)),
     );
   }
 }

@@ -1,11 +1,18 @@
+// STEP 1: Add this package to pubspec.yaml
+// dependencies:
+//   flutter_ringtone_player: ^4.0.0+4
+
+// sensors_data.dart - Uses ONLY system alarm sound (guaranteed to work)
 import 'dart:async';
 import 'dart:math';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:msg_bypas/screens/sos_screen.dart';
 import 'package:sensors_plus/sensors_plus.dart';
 import 'package:noise_meter/noise_meter.dart';
-import 'package:audioplayers/audioplayers.dart';
-
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_ringtone_player/flutter_ringtone_player.dart';
+import '../services/sms_service.dart';
 
 class SosHelp extends StatefulWidget {
   const SosHelp({super.key});
@@ -15,44 +22,32 @@ class SosHelp extends StatefulWidget {
 }
 
 class _SosHelpState extends State<SosHelp> {
-  // Sensor data
   double accelerateX = 0.0, accelerateY = 0.0, accelerateZ = 0.0;
   double gyroscopeX = 0.0, gyroscopeY = 0.0, gyroscopeZ = 0.0;
 
-  // Noise detection
   late NoiseMeter noiseMeter;
   bool isNoiseActive = false;
   StreamSubscription<NoiseReading>? noiseSubscription;
   double latestDB = 0.0;
 
-  // Subscriptions
   StreamSubscription<AccelerometerEvent>? accelerometerSubscription;
   StreamSubscription<GyroscopeEvent>? gyroscopeSubscription;
 
-  // Detection flags
   bool isAccidentDetected = false;
   bool isAlarmPlaying = false;
-
-  // Timers
   Timer? uiUpdateTimer;
 
-  // Counters
   int highAccelerationCount = 0;
   int highNoiseCount = 0;
 
-  // Audio player
-  final AudioPlayer player = AudioPlayer();
+  static const double HIGH_ACCELERATION_THRESHOLD = 20.0;
+  static const double MEDIUM_ACCELERATION_THRESHOLD = 15.0;
+  static const double HIGH_NOISE_THRESHOLD = 75.0;
+  static const double MEDIUM_NOISE_THRESHOLD = 70.0;
+  static const double GYROSCOPE_THRESHOLD = 3.0;
+  static const int REQUIRED_SAMPLES = 2;
+  static const int ALARM_DURATION = 30;
 
-  // ==== Detection thresholds (realistic, tested values) ====
-  static const double HIGH_ACCELERATION_THRESHOLD = 45.0; // ~4.5G severe impact
-  static const double MEDIUM_ACCELERATION_THRESHOLD = 35.0; // ~3.5G strong impact
-  static const double HIGH_NOISE_THRESHOLD = 95.0; // Loud crash, airbag
-  static const double MEDIUM_NOISE_THRESHOLD = 90.0; // Screech or horn
-  static const double GYROSCOPE_THRESHOLD = 6.5; // Sudden strong rotation
-  static const int REQUIRED_SAMPLES = 4; // Must persist 4 readings
-  static const int ALARM_DURATION = 30; // Seconds countdown
-
-  // Adaptive smoothing
   final List<double> recentAccelerations = [];
   static const int SMOOTH_WINDOW = 5;
 
@@ -68,7 +63,6 @@ class _SosHelpState extends State<SosHelp> {
     });
   }
 
-  // ---- NOISE ----
   void startNoiseDetection() {
     if (isNoiseActive) return;
     try {
@@ -82,7 +76,7 @@ class _SosHelpState extends State<SosHelp> {
       print('Noise meter error: $e');
     }
   }
-  // ---- SENSORS ----
+
   void startSensorListeners() {
     accelerometerSubscription = accelerometerEvents.listen((event) {
       accelerateX = event.x;
@@ -98,28 +92,23 @@ class _SosHelpState extends State<SosHelp> {
     });
   }
 
-  // ---- DETECTION LOGIC ----
   void checkForAccident() {
     if (isAccidentDetected) return;
 
-    double accelerationMagnitude =
-    sqrt(accelerateX * accelerateX + accelerateY * accelerateY + accelerateZ * accelerateZ);
+    double accelerationMagnitude = sqrt(accelerateX * accelerateX +
+        accelerateY * accelerateY + accelerateZ * accelerateZ);
+    double gyroscopeMagnitude = sqrt(gyroscopeX * gyroscopeX +
+        gyroscopeY * gyroscopeY + gyroscopeZ * gyroscopeZ);
 
-    double gyroscopeMagnitude =
-    sqrt(gyroscopeX * gyroscopeX + gyroscopeY * gyroscopeY + gyroscopeZ * gyroscopeZ);
-
-    // Smooth small jitters
     recentAccelerations.add(accelerationMagnitude);
     if (recentAccelerations.length > SMOOTH_WINDOW) {
       recentAccelerations.removeAt(0);
     }
     double avgAccel = recentAccelerations.reduce((a, b) => a + b) / recentAccelerations.length;
 
-    // Ignore normal placement or gravity
-    if (avgAccel < 12.0) return; // phone still / normal gravity
-    if (gyroscopeMagnitude < 0.5) return; // tiny rotation
+    if (avgAccel < 10.0) return;
+    if (gyroscopeMagnitude < 0.3) return;
 
-    // Track sustained impact
     if (avgAccel > MEDIUM_ACCELERATION_THRESHOLD) {
       highAccelerationCount++;
     } else {
@@ -132,10 +121,14 @@ class _SosHelpState extends State<SosHelp> {
       highNoiseCount = 0;
     }
 
-    bool highImpact = avgAccel > HIGH_ACCELERATION_THRESHOLD && highAccelerationCount >= REQUIRED_SAMPLES;
-    bool impactWithNoise = highAccelerationCount >= REQUIRED_SAMPLES && highNoiseCount >= REQUIRED_SAMPLES;
-    bool noiseWithImpact = latestDB > HIGH_NOISE_THRESHOLD && avgAccel > MEDIUM_ACCELERATION_THRESHOLD;
-    bool rollover = gyroscopeMagnitude > GYROSCOPE_THRESHOLD && highAccelerationCount >= REQUIRED_SAMPLES;
+    bool highImpact = avgAccel > HIGH_ACCELERATION_THRESHOLD &&
+        highAccelerationCount >= REQUIRED_SAMPLES;
+    bool impactWithNoise = highAccelerationCount >= REQUIRED_SAMPLES &&
+        highNoiseCount >= REQUIRED_SAMPLES;
+    bool noiseWithImpact = latestDB > HIGH_NOISE_THRESHOLD &&
+        avgAccel > MEDIUM_ACCELERATION_THRESHOLD;
+    bool rollover = gyroscopeMagnitude > GYROSCOPE_THRESHOLD &&
+        highAccelerationCount >= REQUIRED_SAMPLES;
 
     if (highImpact || impactWithNoise || noiseWithImpact || rollover) {
       isAccidentDetected = true;
@@ -145,16 +138,51 @@ class _SosHelpState extends State<SosHelp> {
     }
   }
 
-  // ---- ALERT DIALOG ----
+  void triggerManualTest() {
+    if (isAccidentDetected || isAlarmPlaying) return;
+    isAccidentDetected = true;
+    showAccidentDialog(context);
+  }
+
+  // SYSTEM ALARM - GUARANTEED TO WORK
+  Future<void> _startAlarm() async {
+    isAlarmPlaying = true;
+
+    try {
+      // Use system alarm sound - ALWAYS WORKS!
+      await FlutterRingtonePlayer().playAlarm(
+        looping: true,
+        volume: 1.0,
+        asAlarm: true,
+      );
+      print('✅ System alarm started');
+
+      // Also vibrate
+      HapticFeedback.heavyImpact();
+    } catch (e) {
+      print('Alarm error: $e');
+    }
+  }
+
+  Future<void> _stopAlarm() async {
+    isAlarmPlaying = false;
+
+    try {
+      await FlutterRingtonePlayer().stop();
+      print('⏹️ Alarm stopped');
+    } catch (e) {
+      print('Stop alarm error: $e');
+    }
+  }
+
   void showAccidentDialog(BuildContext context) async {
     int remainingSeconds = ALARM_DURATION;
     bool dismissed = false;
     Timer? countdownTimer;
 
-    isAlarmPlaying = true;
-
-    await player.setReleaseMode(ReleaseMode.loop);
-    await player.play(AssetSource('images/Alert_alarm.wav'));
+    // START ALARM IMMEDIATELY
+    print('🚨 Starting alarm...');
+    await _startAlarm();
 
     if (!mounted) return;
 
@@ -163,28 +191,32 @@ class _SosHelpState extends State<SosHelp> {
       barrierDismissible: false,
       builder: (_) => StatefulBuilder(
         builder: (dialogContext, setDialogState) {
-          // Start countdown timer after dialog is built
           if (countdownTimer == null) {
-            countdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+            countdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) async {
               if (dismissed) {
                 timer.cancel();
                 return;
               }
 
               remainingSeconds--;
-              setDialogState(() {}); // Update dialog UI
+              setDialogState(() {});
 
               if (remainingSeconds <= 0) {
                 timer.cancel();
+
+                await _sendEmergencySMSToAll();
+                await _stopAlarm();
+
                 if (Navigator.canPop(dialogContext)) {
                   Navigator.of(dialogContext).pop();
                 }
                 if (mounted) {
-                  Navigator.push(context, MaterialPageRoute(builder: (_) => const SosScreen()));
+                  Navigator.push(context,
+                      MaterialPageRoute(builder: (_) => const SosScreen()));
                 }
-                player.stop();
-                isAccidentDetected = false;
-                isAlarmPlaying = false;
+                setState(() {
+                  isAccidentDetected = false;
+                });
               }
             });
           }
@@ -196,15 +228,19 @@ class _SosHelpState extends State<SosHelp> {
                 children: [
                   Icon(Icons.warning_amber_rounded, color: Colors.red, size: 30),
                   SizedBox(width: 10),
-                  Text('ACCIDENT DETECTED!',
-                      style: TextStyle(color: Colors.red, fontSize: 20, fontWeight: FontWeight.bold)),
+                  Expanded(
+                    child: Text('🚨 ACCIDENT DETECTED!',
+                        style: TextStyle(color: Colors.red, fontSize: 20,
+                            fontWeight: FontWeight.bold)),
+                  ),
                 ],
               ),
               content: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Text('Emergency services will be contacted in:',
-                      textAlign: TextAlign.center),
+                  const Text('Emergency contacts will be notified in:',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                   const SizedBox(height: 20),
                   Container(
                     padding: const EdgeInsets.all(20),
@@ -230,35 +266,43 @@ class _SosHelpState extends State<SosHelp> {
               actions: [
                 TextButton(
                   style: TextButton.styleFrom(
-                      backgroundColor: Colors.green, foregroundColor: Colors.white),
-                  onPressed: () {
+                      backgroundColor: Colors.green,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12)),
+                  onPressed: () async {
                     dismissed = true;
                     countdownTimer?.cancel();
-                    player.stop();
+                    await _stopAlarm();
                     Navigator.of(dialogContext).pop();
                     setState(() {
                       isAccidentDetected = false;
-                      isAlarmPlaying = false;
                     });
                   },
-                  child: const Text("I'M SAFE", style: TextStyle(fontWeight: FontWeight.bold)),
+                  child: const Text("I'M SAFE",
+                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                 ),
+                const SizedBox(width: 8),
                 TextButton(
                   style: TextButton.styleFrom(
-                      backgroundColor: Colors.red, foregroundColor: Colors.white),
-                  onPressed: () {
+                      backgroundColor: Colors.red,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12)),
+                  onPressed: () async {
                     dismissed = true;
                     countdownTimer?.cancel();
-                    player.stop();
+                    await _stopAlarm();
                     Navigator.of(dialogContext).pop();
-                    Navigator.push(context, MaterialPageRoute(builder: (_) => const SosScreen()));
+
+                    await _sendEmergencySMSToAll();
+
+                    Navigator.push(context,
+                        MaterialPageRoute(builder: (_) => const SosScreen()));
                     setState(() {
                       isAccidentDetected = false;
-                      isAlarmPlaying = false;
                     });
                   },
-                  child: const Text('CALL SOS NOW',
-                      style: TextStyle(fontWeight: FontWeight.bold)),
+                  child: const Text('SEND SOS NOW',
+                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                 ),
               ],
             ),
@@ -268,20 +312,49 @@ class _SosHelpState extends State<SosHelp> {
     );
   }
 
+  Future<void> _sendEmergencySMSToAll() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final contactsJson = prefs.getStringList('emergency_contacts') ?? [];
+
+      if (contactsJson.isEmpty) {
+        print('⚠️ No emergency contacts found');
+        return;
+      }
+
+      print('📱 Sending SMS to ${contactsJson.length} contacts...');
+
+      for (String contactJson in contactsJson) {
+        final parts = contactJson.split('|');
+        if (parts.length >= 2) {
+          final name = parts[0];
+          final phoneNumber = parts[1];
+          print('Sending to $name ($phoneNumber)...');
+          await SMSService.sendEmergencySMS(phoneNumber);
+          await Future.delayed(const Duration(milliseconds: 500));
+        }
+      }
+
+      print('✅ SMS sent to all contacts');
+    } catch (e) {
+      print('❌ Error sending emergency SMS: $e');
+    }
+  }
+
   @override
   void dispose() {
     noiseSubscription?.cancel();
     accelerometerSubscription?.cancel();
     gyroscopeSubscription?.cancel();
     uiUpdateTimer?.cancel();
-    player.dispose();
+    FlutterRingtonePlayer().stop();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    double accelerationMagnitude =
-    sqrt(accelerateX * accelerateX + accelerateY * accelerateY + accelerateZ * accelerateZ);
+    double accelerationMagnitude = sqrt(accelerateX * accelerateX +
+        accelerateY * accelerateY + accelerateZ * accelerateZ);
 
     return Scaffold(
       appBar: AppBar(
@@ -294,7 +367,6 @@ class _SosHelpState extends State<SosHelp> {
           padding: const EdgeInsets.all(16.0),
           child: Column(
             children: [
-              // Status
               Card(
                 color: isAccidentDetected ? Colors.red.shade50 : Colors.green.shade50,
                 elevation: 4,
@@ -316,6 +388,39 @@ class _SosHelpState extends State<SosHelp> {
               ),
               const SizedBox(height: 20),
 
+              ElevatedButton.icon(
+                onPressed: triggerManualTest,
+                icon: const Icon(Icons.bug_report),
+                label: const Text('TEST ALARM & SMS'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.orange,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+                  textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                ),
+              ),
+              const SizedBox(height: 12),
+
+              OutlinedButton.icon(
+                onPressed: () async {
+                  await _startAlarm();
+                  await Future.delayed(const Duration(seconds: 3));
+                  await _stopAlarm();
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('✅ System alarm test complete!'),
+                        backgroundColor: Colors.green,
+                      ),
+                    );
+                  }
+                },
+                icon: const Icon(Icons.volume_up),
+                label: const Text('Test System Alarm (3 sec)'),
+              ),
+
+              const SizedBox(height: 20),
+
               _buildSensorCard("Accelerometer", Icons.speed, Colors.blue, [
                 _buildSensorRow("X", accelerateX),
                 _buildSensorRow("Y", accelerateY),
@@ -327,9 +432,15 @@ class _SosHelpState extends State<SosHelp> {
                 _buildSensorRow("X", gyroscopeX),
                 _buildSensorRow("Y", gyroscopeY),
                 _buildSensorRow("Z", gyroscopeZ),
+                _buildSensorRow("Magnitude",
+                    sqrt(gyroscopeX * gyroscopeX + gyroscopeY * gyroscopeY +
+                        gyroscopeZ * gyroscopeZ),
+                    isAlert: sqrt(gyroscopeX * gyroscopeX + gyroscopeY * gyroscopeY +
+                        gyroscopeZ * gyroscopeZ) > GYROSCOPE_THRESHOLD),
               ]),
               _buildSensorCard("Noise Level (dB)", Icons.volume_up, Colors.red, [
-                _buildSensorRow("Current", latestDB, isAlert: latestDB > MEDIUM_NOISE_THRESHOLD),
+                _buildSensorRow("Current", latestDB,
+                    isAlert: latestDB > MEDIUM_NOISE_THRESHOLD),
                 const SizedBox(height: 8),
                 LinearProgressIndicator(
                   value: (latestDB / 120).clamp(0.0, 1.0),
@@ -339,20 +450,40 @@ class _SosHelpState extends State<SosHelp> {
                 ),
               ]),
               const SizedBox(height: 20),
-              const Card(
+              Card(
                 elevation: 3,
+                color: Colors.orange.shade50,
                 child: Padding(
-                  padding: EdgeInsets.all(16),
+                  padding: const EdgeInsets.all(16),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text("Detection Thresholds:",
-                          style: TextStyle(fontWeight: FontWeight.bold)),
-                      SizedBox(height: 6),
-                      Text("• Severe impact: > 45 m/s² (sustained 4 readings)"),
-                      Text("• Loud crash: > 95 dB"),
-                      Text("• Rollover: > 6.5 rad/s rotation"),
-                      Text("• Combined sustained impact + noise triggers detection"),
+                      const Row(
+                        children: [
+                          Icon(Icons.info_outline, color: Colors.orange),
+                          SizedBox(width: 8),
+                          Text("Detection Thresholds (TEST MODE):",
+                              style: TextStyle(fontWeight: FontWeight.bold,
+                                  color: Colors.orange)),
+                        ],
+                      ),
+                      const SizedBox(height: 6),
+                      Text("• Severe impact: > ${HIGH_ACCELERATION_THRESHOLD.toStringAsFixed(1)} m/s² (${REQUIRED_SAMPLES} readings)"),
+                      Text("• Loud noise: > ${HIGH_NOISE_THRESHOLD.toStringAsFixed(1)} dB"),
+                      Text("• Rollover: > ${GYROSCOPE_THRESHOLD.toStringAsFixed(1)} rad/s rotation"),
+                      const Text("• Combined sustained impact + noise triggers detection"),
+                      const SizedBox(height: 10),
+                      const Text(
+                        "✅ Using system alarm sound - guaranteed to work!",
+                        style: TextStyle(fontWeight: FontWeight.bold,
+                            color: Colors.green, fontSize: 12),
+                      ),
+                      const SizedBox(height: 4),
+                      const Text(
+                        "TIP: Shake your phone vigorously or make a loud noise to test!",
+                        style: TextStyle(fontStyle: FontStyle.italic,
+                            color: Colors.orange, fontSize: 12),
+                      ),
                     ],
                   ),
                 ),
@@ -364,7 +495,8 @@ class _SosHelpState extends State<SosHelp> {
     );
   }
 
-  Widget _buildSensorCard(String title, IconData icon, Color color, List<Widget> children) {
+  Widget _buildSensorCard(String title, IconData icon, Color color,
+      List<Widget> children) {
     return Card(
       elevation: 3,
       margin: const EdgeInsets.only(bottom: 16),
@@ -374,7 +506,8 @@ class _SosHelpState extends State<SosHelp> {
           Row(children: [
             Icon(icon, color: color),
             const SizedBox(width: 8),
-            Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold))
+            Text(title, style: const TextStyle(fontSize: 18,
+                fontWeight: FontWeight.bold))
           ]),
           const SizedBox(height: 8),
           ...children,

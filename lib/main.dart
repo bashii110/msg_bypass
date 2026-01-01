@@ -1,5 +1,4 @@
 import 'dart:ui';
-
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:msg_bypas/screens/splash_screen.dart';
@@ -20,13 +19,13 @@ class MyApp extends StatelessWidget {
       title: 'Emergency SMS',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        primarySwatch: Colors.red,
-        primaryColor: Colors.red.shade700,
+        primarySwatch: Colors.blue,
+        primaryColor: Colors.blue.shade700,
         useMaterial3: true,
         appBarTheme: AppBarTheme(
           centerTitle: true,
           elevation: 2,
-          backgroundColor: Colors.red.shade700,
+          backgroundColor: Colors.blue.shade700,
           foregroundColor: Colors.white,
         ),
         elevatedButtonTheme: ElevatedButtonThemeData(

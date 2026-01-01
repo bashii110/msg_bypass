@@ -217,7 +217,7 @@ class AccidentDetectionService {
           final phoneNumber = parts[1];
           print('Sending to $name ($phoneNumber)...');
 
-          bool sent = await SMSService.sendEmergencySMS(phoneNumber);
+          bool sent = await SMSService.sendEmergencySMS(phoneNumber, message: "");
 
           if (sent) {
             print('✅ SMS sent to $name');

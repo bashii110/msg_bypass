@@ -173,7 +173,7 @@ class AccidentDialogService {
           final phoneNumber = parts[1];
           print('Sending to $name ($phoneNumber)...');
 
-          await SMSService.sendEmergencySMS(phoneNumber);
+          await SMSService.sendEmergencySMS(phoneNumber, message: '');
           await Future.delayed(const Duration(milliseconds: 500));
         }
       }

@@ -108,7 +108,8 @@ class SMSService {
   }
 
   /// Send emergency SMS with automatic fallback
-  static Future<bool> sendEmergencySMS(String phoneNumber) async {
+  static Future<bool> sendEmergencySMS(String phoneNumber, {required String message}) async {
+
     try {
       String message = await LocationService.getFullLocationMessage();
       return await sendSMS(phoneNumber, message);

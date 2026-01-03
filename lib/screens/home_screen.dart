@@ -6,8 +6,9 @@ import 'package:msg_bypas/screens/settings_scrren.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sensors_plus/sensors_plus.dart';
 import 'package:noise_meter/noise_meter.dart';
-import 'package:flutter_ringtone_player/flutter_ringtone_player.dart';
+import 'package:audioplayers/audioplayers.dart';
 import '../services/sms_service.dart';
+import '../services/call_service.dart';
 
 import 'emergencycontactscreen.dart';
 import 'sos_screen.dart';
@@ -30,6 +31,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   double _latestDB = 0.0;
 
   late NoiseMeter _noiseMeter;
+  late AudioPlayer _audioPlayer;
+
   StreamSubscription<NoiseReading>? _noiseSubscription;
   StreamSubscription<AccelerometerEvent>? _accelerometerSubscription;
   StreamSubscription<GyroscopeEvent>? _gyroscopeSubscription;
@@ -49,40 +52,28 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   // Platform channel for native alarm service
   static const platform = MethodChannel('com.buxhiisd.msg_bypas/alarm');
-  static const EventChannel userSafeChannel = EventChannel('com.buxhiisd.msg_bypas/user_safe');
 
   // Countdown tracking using absolute time (survives background!)
   DateTime? _countdownEndTime;
   Timer? _uiUpdateTimer;
-  StreamSubscription? _userSafeSubscription;
+  Timer? _userSafeCheckTimer;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _noiseMeter = NoiseMeter();
+    _audioPlayer = AudioPlayer();
     _loadSettings();
-    _setupUserSafeBroadcastReceiver();
   }
-
-  void _setupUserSafeBroadcastReceiver() {
-    // Listen for "I'm Safe" button pressed from notification
-    _userSafeSubscription = userSafeChannel.receiveBroadcastStream().listen((event) {
-      print("✅ User pressed 'I'm Safe' from notification");
-      _handleUserSafe();
-    }, onError: (error) {
-      print("❌ UserSafe event error: $error");
-    });
-  }
-
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _stopMonitoring();
     _uiUpdateTimer?.cancel();
-    _userSafeSubscription?.cancel();
-    FlutterRingtonePlayer().stop();
+    _userSafeCheckTimer?.cancel();
+    _audioPlayer.dispose();
     _stopNativeAlarmService();
     super.dispose();
   }
@@ -92,7 +83,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     super.didChangeAppLifecycleState(state);
 
     if (state == AppLifecycleState.resumed) {
-      // When app comes back to foreground, check status
+      print("🔄 App resumed - checking status");
       _checkCountdownStatus();
       _checkUserSafeStatus();
     }
@@ -109,7 +100,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _checkUserSafeStatus() async {
-    // Check via method channel if user pressed "I'm Safe"
     try {
       final result = await platform.invokeMethod('checkUserSafe');
       if (result == true) {
@@ -117,7 +107,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         _handleUserSafe();
       }
     } catch (e) {
-      // Method not implemented yet, ignore
+      print("Error checking user safe status: $e");
     }
   }
 
@@ -226,10 +216,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   Future<void> _startAccidentCountdown() async {
     print("🚨 Starting accident countdown...");
 
-    // Set absolute end time (this survives background!)
     _countdownEndTime = DateTime.now().add(Duration(seconds: ALARM_DURATION));
 
-    // Start alarm sound
+    // Start custom alarm sound from assets
     await _startAlarm();
 
     // Turn screen on via native
@@ -250,13 +239,16 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       print('❌ Failed to start alarm service: $e');
     }
 
-    // Start UI update timer - check time continuously
+    // Start polling for "I'm Safe" button press
+    _startUserSafePolling();
+
+    // Start UI update timer
     _uiUpdateTimer?.cancel();
     _uiUpdateTimer = Timer.periodic(const Duration(milliseconds: 500), (timer) {
       final remaining = _getRemainingSeconds();
 
       if (mounted) {
-        setState(() {}); // Update UI
+        setState(() {});
       }
 
       print("⏱️ Remaining: $remaining seconds");
@@ -268,28 +260,37 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       }
     });
 
-    // Show dialog
     if (mounted) {
       _showAccidentDialog();
     }
   }
 
+  void _startUserSafePolling() {
+    _userSafeCheckTimer?.cancel();
+    _userSafeCheckTimer = Timer.periodic(const Duration(milliseconds: 500), (timer) {
+      if (!_isAccidentDetected) {
+        timer.cancel();
+        return;
+      }
+      _checkUserSafeStatus();
+    });
+  }
+
   Future<void> _onCountdownComplete() async {
-    if (!_isAccidentDetected) return; // Prevent double-trigger
+    if (!_isAccidentDetected) return;
 
     print("✅ Countdown complete - sending emergency SMS");
 
     _uiUpdateTimer?.cancel();
+    _userSafeCheckTimer?.cancel();
     _countdownEndTime = null;
 
     await _stopAlarm();
     await _stopNativeAlarmService();
 
-    // SEND SMS!
     await _sendEmergencySMS();
 
     if (mounted) {
-      // Close dialog if still open
       if (Navigator.canPop(context)) {
         Navigator.of(context).pop();
       }
@@ -303,16 +304,16 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   void _handleUserSafe() {
-    print("✅ User is safe - stopping alarm");
+    print("✅ User is safe - stopping alarm IMMEDIATELY");
 
     _uiUpdateTimer?.cancel();
+    _userSafeCheckTimer?.cancel();
     _countdownEndTime = null;
 
     _stopAlarm();
     _stopNativeAlarmService();
 
     if (mounted) {
-      // Close dialog if still open
       if (Navigator.canPop(context)) {
         Navigator.of(context).pop();
       }
@@ -335,18 +336,54 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   Future<void> _startAlarm() async {
     _isAlarmPlaying = true;
     try {
-      await FlutterRingtonePlayer().playAlarm(looping: true, volume: 1.0, asAlarm: true);
+      // Configure audio player
+      await _audioPlayer.setReleaseMode(ReleaseMode.loop);
+      await _audioPlayer.setVolume(1.0);
+
+      // Set audio context for alarm (important for Android)
+      await _audioPlayer.setAudioContext(
+        AudioContext(
+          iOS: AudioContextIOS(
+            category: AVAudioSessionCategory.playback,
+            options: [AVAudioSessionOptions.mixWithOthers],
+          ),
+          android: AudioContextAndroid(
+            isSpeakerphoneOn: true,
+            stayAwake: true,
+            contentType: AndroidContentType.sonification,
+            usageType: AndroidUsageType.alarm,
+            audioFocus: AndroidAudioFocus.gain,
+          ),
+        ),
+      );
+
+      print("🔊 Attempting to play: assets/images/Alert_alarm.wav");
+
+      // Play custom alarm from assets - CORRECT PATH
+      await _audioPlayer.play(AssetSource('images/Alert_alarm.wav'));
+
       HapticFeedback.heavyImpact();
-      print("🔊 Alarm started");
+      print("✅ Custom alarm started successfully");
     } catch (e) {
-      print('Alarm error: $e');
+      print('❌ Alarm error: $e');
+      print('Error details: ${e.toString()}');
+
+      // Show error to user
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Alarm error: Check if Alert_alarm.wav exists in assets/images/ folder'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
     }
   }
 
   Future<void> _stopAlarm() async {
     _isAlarmPlaying = false;
     try {
-      await FlutterRingtonePlayer().stop();
+      await _audioPlayer.stop();
       print("🔇 Alarm stopped");
     } catch (e) {
       print('Stop error: $e');
@@ -363,7 +400,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         canPop: false,
         child: StatefulBuilder(
           builder: (_, setDialogState) {
-            // Update dialog continuously
             Timer.periodic(const Duration(milliseconds: 300), (timer) {
               if (!mounted || !_isAccidentDetected) {
                 timer.cancel();
@@ -418,10 +454,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                       height: 50,
                       child: ElevatedButton.icon(
                         onPressed: () {
-                          print("✅ User clicked I'M SAFE");
+                          print("✅ User clicked I'M SAFE from dialog");
                           _handleUserSafe();
                         },
-
                         icon: const Icon(Icons.check_circle, size: 24),
                         label: const Text("I'M SAFE", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
                         style: ElevatedButton.styleFrom(
@@ -439,6 +474,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                         onPressed: () async {
                           print("🆘 User clicked SEND SOS NOW");
                           _uiUpdateTimer?.cancel();
+                          _userSafeCheckTimer?.cancel();
                           _countdownEndTime = null;
                           await _stopNativeAlarmService();
                           await _stopAlarm();
@@ -478,18 +514,42 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
       print("📤 Sending SMS to ${contactsJson.length} contacts");
 
+      List<String> phoneNumbers = [];
+
       for (String contactJson in contactsJson) {
         final parts = contactJson.split('|');
         if (parts.length >= 2) {
           await SMSService.sendEmergencySMS(parts[1], message: '');
           print("✅ SMS sent to ${parts[0]} (${parts[1]})");
+          phoneNumbers.add(parts[1]); // Collect phone numbers for calling
           await Future.delayed(const Duration(milliseconds: 500));
         }
       }
 
       print("✅ All SMS sent successfully!");
+
+      // NEW: Make emergency calls after SMS
+      if (phoneNumbers.isNotEmpty) {
+        print("📞 Starting emergency calls...");
+
+        // Check call permission first
+        final hasPermission = await CallService.hasCallPermission();
+        if (!hasPermission) {
+          print("⚠️ Requesting call permission...");
+          await CallService.requestCallPermission();
+          await Future.delayed(const Duration(seconds: 2));
+        }
+
+        // Make calls to all contacts
+        await CallService.makeEmergencyCalls(
+          phoneNumbers,
+          delayBetweenCalls: const Duration(seconds: 30), // 30 seconds between calls
+        );
+
+        print("✅ All emergency calls initiated!");
+      }
     } catch (e) {
-      print('❌ SMS error: $e');
+      print('❌ SMS/Call error: $e');
     }
   }
 
@@ -599,10 +659,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             Icon(_isMonitoring ? Icons.sensors : Icons.sensors_off, size: 64, color: _isMonitoring ? Colors.green : Colors.grey),
             const SizedBox(height: 16),
             Text(_isMonitoring ? 'Monitoring Active' : 'Monitoring Inactive',
-                style: const TextStyle(color: Colors.white ,fontSize: 24, fontWeight: FontWeight.bold)),
+                style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold)),
             const SizedBox(height: 8),
             Text(_isMonitoring ? 'Accident detection running' : 'Tap below to start',
-                style:const TextStyle(color: Colors.white, fontSize: 14)),
+                style: const TextStyle(color: Colors.white, fontSize: 14)),
             const SizedBox(height: 20),
             SizedBox(
               width: double.infinity,
@@ -681,11 +741,27 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             Text("• Rollover: > ${GYROSCOPE_THRESHOLD.toStringAsFixed(1)} rad/s rotation"),
             const Text("• Combined sustained impact + noise triggers detection"),
             const SizedBox(height: 10),
-            const Text("✅ Time-based countdown - works in background!",
+            const Text("✅ Custom alarm sound from assets!",
                 style: TextStyle(fontWeight: FontWeight.bold, color: Colors.green, fontSize: 12)),
             const SizedBox(height: 4),
             const Text("TIP: Shake your phone vigorously or make a loud noise to test!",
                 style: TextStyle(fontStyle: FontStyle.italic, color: Colors.orange, fontSize: 12)),
+            const SizedBox(height: 10),
+            // TEST BUTTON
+            ElevatedButton.icon(
+              onPressed: () async {
+                print("🧪 Testing alarm sound...");
+                await _startAlarm();
+                await Future.delayed(const Duration(seconds: 3));
+                await _stopAlarm();
+              },
+              icon: const Icon(Icons.volume_up, size: 20),
+              label: const Text('TEST ALARM SOUND'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.blue,
+                foregroundColor: Colors.white,
+              ),
+            ),
           ],
         ),
       ),
@@ -713,6 +789,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             _buildInfoItem('• Automatically detects accidents'),
             _buildInfoItem('• ✅ Works in background & screen off'),
             _buildInfoItem('• Sends SMS with GPS location'),
+            _buildInfoItem('• 📞 Automatically calls emergency contacts'),
             _buildInfoItem('• Includes Google Maps link'),
           ],
         ),

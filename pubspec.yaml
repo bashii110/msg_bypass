@@ -47,5 +47,6 @@ flutter:
   uses-material-design: true
 
   assets:
+    - assets/images/Alert_alarm.wav
     - assets/images/
     - assets/lottie/

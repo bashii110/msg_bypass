@@ -25,6 +25,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   bool _isLoading = false;
   bool _isAccidentDetected = false;
   bool _isAlarmPlaying = false;
+  bool _isBatteryOptimized = true;
 
   double _accelerateX = 0.0, _accelerateY = 0.0, _accelerateZ = 0.0;
   double _gyroscopeX = 0.0, _gyroscopeY = 0.0, _gyroscopeZ = 0.0;
@@ -50,10 +51,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   static const int SMOOTH_WINDOW = 5;
   static const int ALARM_DURATION = 30;
 
-  // Platform channel for native alarm service
+  // Platform channels
   static const platform = MethodChannel('com.buxhiisd.msg_bypas/alarm');
+  static const serviceChannel = MethodChannel('com.buxhiisd.msg_bypas/service');
 
-  // Countdown tracking using absolute time (survives background!)
+  // Countdown tracking
   DateTime? _countdownEndTime;
   Timer? _uiUpdateTimer;
   Timer? _userSafeCheckTimer;
@@ -65,12 +67,25 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     _noiseMeter = NoiseMeter();
     _audioPlayer = AudioPlayer();
     _loadSettings();
+    _checkBatteryOptimization();
+
+    // Listen for background accident detection
+    platform.setMethodCallHandler(_handleMethodCall);
+  }
+
+  Future<void> _handleMethodCall(MethodCall call) async {
+    if (call.method == 'onAccidentDetectedBackground') {
+      print('🚨 Accident detected from background service!');
+      if (mounted && !_isAccidentDetected) {
+        _triggerAccident();
+      }
+    }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _stopMonitoring();
+    _stopForegroundMonitoring();
     _uiUpdateTimer?.cancel();
     _userSafeCheckTimer?.cancel();
     _audioPlayer.dispose();
@@ -111,6 +126,27 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     }
   }
 
+  Future<void> _checkBatteryOptimization() async {
+    try {
+      final result = await serviceChannel.invokeMethod('isBatteryOptimized');
+      setState(() {
+        _isBatteryOptimized = result == true;
+      });
+    } catch (e) {
+      print('Error checking battery optimization: $e');
+    }
+  }
+
+  Future<void> _requestIgnoreBatteryOptimization() async {
+    try {
+      await serviceChannel.invokeMethod('requestIgnoreBatteryOptimization');
+      await Future.delayed(const Duration(seconds: 2));
+      await _checkBatteryOptimization();
+    } catch (e) {
+      print('Error requesting battery optimization: $e');
+    }
+  }
+
   int _getRemainingSeconds() {
     if (_countdownEndTime == null) return ALARM_DURATION;
 
@@ -124,10 +160,33 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     setState(() {
       _isMonitoring = prefs.getBool('monitoring_enabled') ?? false;
     });
-    if (_isMonitoring) _startMonitoring();
+    if (_isMonitoring) {
+      _startBackgroundService();
+      _startForegroundMonitoring(); // Also monitor in foreground for immediate response
+    }
   }
 
-  void _startMonitoring() {
+  // START/STOP BACKGROUND SERVICE
+  Future<void> _startBackgroundService() async {
+    try {
+      await serviceChannel.invokeMethod('startMonitoringService');
+      print('✅ Background monitoring service started');
+    } catch (e) {
+      print('❌ Failed to start background service: $e');
+    }
+  }
+
+  Future<void> _stopBackgroundService() async {
+    try {
+      await serviceChannel.invokeMethod('stopMonitoringService');
+      print('⏸️ Background monitoring service stopped');
+    } catch (e) {
+      print('Failed to stop background service: $e');
+    }
+  }
+
+  // FOREGROUND MONITORING (when app is open)
+  void _startForegroundMonitoring() {
     if (_isMonitoring) {
       try {
         _noiseSubscription = _noiseMeter.noise.listen((reading) {
@@ -155,7 +214,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     }
   }
 
-  void _stopMonitoring() {
+  void _stopForegroundMonitoring() {
     _noiseSubscription?.cancel();
     _accelerometerSubscription?.cancel();
     _gyroscopeSubscription?.cancel();
@@ -218,10 +277,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
     _countdownEndTime = DateTime.now().add(Duration(seconds: ALARM_DURATION));
 
-    // Start custom alarm sound from assets
     await _startAlarm();
 
-    // Turn screen on via native
     try {
       await platform.invokeMethod('turnScreenOn');
       print("✅ Screen turned on");
@@ -229,7 +286,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       print('Failed to turn screen on: $e');
     }
 
-    // Start native foreground service
     try {
       await platform.invokeMethod('startAlarmService', {
         'duration': ALARM_DURATION,
@@ -239,10 +295,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       print('❌ Failed to start alarm service: $e');
     }
 
-    // Start polling for "I'm Safe" button press
     _startUserSafePolling();
 
-    // Start UI update timer
     _uiUpdateTimer?.cancel();
     _uiUpdateTimer = Timer.periodic(const Duration(milliseconds: 500), (timer) {
       final remaining = _getRemainingSeconds();
@@ -336,11 +390,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   Future<void> _startAlarm() async {
     _isAlarmPlaying = true;
     try {
-      // Configure audio player
       await _audioPlayer.setReleaseMode(ReleaseMode.loop);
       await _audioPlayer.setVolume(1.0);
 
-      // Set audio context for alarm (important for Android)
       await _audioPlayer.setAudioContext(
         AudioContext(
           iOS: AudioContextIOS(
@@ -357,26 +409,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         ),
       );
 
-      print("🔊 Attempting to play: assets/images/Alert_alarm.wav");
-
-      // Play custom alarm from assets - CORRECT PATH
       await _audioPlayer.play(AssetSource('images/Alert_alarm.wav'));
-
       HapticFeedback.heavyImpact();
       print("✅ Custom alarm started successfully");
     } catch (e) {
       print('❌ Alarm error: $e');
-      print('Error details: ${e.toString()}');
-
-      // Show error to user
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Alarm error: Check if Alert_alarm.wav exists in assets/images/ folder'),
-            backgroundColor: Colors.orange,
-          ),
-        );
-      }
     }
   }
 
@@ -521,18 +558,16 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         if (parts.length >= 2) {
           await SMSService.sendEmergencySMS(parts[1], message: '');
           print("✅ SMS sent to ${parts[0]} (${parts[1]})");
-          phoneNumbers.add(parts[1]); // Collect phone numbers for calling
+          phoneNumbers.add(parts[1]);
           await Future.delayed(const Duration(milliseconds: 500));
         }
       }
 
       print("✅ All SMS sent successfully!");
 
-      // NEW: Make emergency calls after SMS
       if (phoneNumbers.isNotEmpty) {
         print("📞 Starting emergency calls...");
 
-        // Check call permission first
         final hasPermission = await CallService.hasCallPermission();
         if (!hasPermission) {
           print("⚠️ Requesting call permission...");
@@ -540,10 +575,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           await Future.delayed(const Duration(seconds: 2));
         }
 
-        // Make calls to all contacts
         await CallService.makeEmergencyCalls(
           phoneNumbers,
-          delayBetweenCalls: const Duration(seconds: 30), // 30 seconds between calls
+          delayBetweenCalls: const Duration(seconds: 30),
         );
 
         print("✅ All emergency calls initiated!");
@@ -559,10 +593,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     await prefs.setBool('monitoring_enabled', _isMonitoring);
 
     if (_isMonitoring) {
-      _startMonitoring();
+      await _startBackgroundService();
+      _startForegroundMonitoring();
       _showSnackBar('✅ Accident detection started', Colors.green);
     } else {
-      _stopMonitoring();
+      await _stopBackgroundService();
+      _stopForegroundMonitoring();
       _showSnackBar('⏸️ Accident detection stopped', Colors.orange);
     }
   }
@@ -626,6 +662,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            if (_isBatteryOptimized) _buildBatteryWarningCard(),
+            const SizedBox(height: 16),
             _buildStatusCard(),
             const SizedBox(height: 16),
             _buildEmergencyContactCard(),
@@ -648,6 +686,47 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     );
   }
 
+  Widget _buildBatteryWarningCard() {
+    return Card(
+      elevation: 4,
+      color: Colors.orange.shade50,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.battery_alert, color: Colors.orange.shade700, size: 28),
+                const SizedBox(width: 12),
+                const Expanded(
+                  child: Text('⚠️ Battery Optimization Active',
+                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            const Text('For reliable background detection on Vivo/Oppo/Xiaomi phones, disable battery optimization.',
+                style: TextStyle(fontSize: 13)),
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: _requestIgnoreBatteryOptimization,
+                icon: const Icon(Icons.power_settings_new, size: 20),
+                label: const Text('Disable Battery Optimization'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.orange,
+                  foregroundColor: Colors.white,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildStatusCard() {
     return Card(
       color: Colors.blueAccent,
@@ -661,7 +740,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             Text(_isMonitoring ? 'Monitoring Active' : 'Monitoring Inactive',
                 style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold)),
             const SizedBox(height: 8),
-            Text(_isMonitoring ? 'Accident detection running' : 'Tap below to start',
+            Text(_isMonitoring ? '✅ Background service running' : 'Tap below to start',
                 style: const TextStyle(color: Colors.white, fontSize: 14)),
             const SizedBox(height: 20),
             SizedBox(
@@ -731,23 +810,18 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               children: [
                 const Icon(Icons.info_outline, color: Colors.orange),
                 const SizedBox(width: 8),
-                const Text("Detection Thresholds (TEST MODE):",
+                const Text("Detection Thresholds:",
                     style: TextStyle(fontWeight: FontWeight.bold, color: Colors.orange)),
               ],
             ),
             const SizedBox(height: 6),
-            Text("• Severe impact: > ${HIGH_ACCELERATION_THRESHOLD.toStringAsFixed(1)} m/s² (${REQUIRED_SAMPLES} readings)"),
+            Text("• Severe impact: > ${HIGH_ACCELERATION_THRESHOLD.toStringAsFixed(1)} m/s²"),
             Text("• Loud noise: > ${HIGH_NOISE_THRESHOLD.toStringAsFixed(1)} dB"),
-            Text("• Rollover: > ${GYROSCOPE_THRESHOLD.toStringAsFixed(1)} rad/s rotation"),
-            const Text("• Combined sustained impact + noise triggers detection"),
+            Text("• Rollover: > ${GYROSCOPE_THRESHOLD.toStringAsFixed(1)} rad/s"),
             const SizedBox(height: 10),
-            const Text("✅ Custom alarm sound from assets!",
+            const Text("✅ Background service keeps monitoring even when app is closed!",
                 style: TextStyle(fontWeight: FontWeight.bold, color: Colors.green, fontSize: 12)),
-            const SizedBox(height: 4),
-            const Text("TIP: Shake your phone vigorously or make a loud noise to test!",
-                style: TextStyle(fontStyle: FontStyle.italic, color: Colors.orange, fontSize: 12)),
             const SizedBox(height: 10),
-            // TEST BUTTON
             ElevatedButton.icon(
               onPressed: () async {
                 print("🧪 Testing alarm sound...");
@@ -786,10 +860,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             ),
             const SizedBox(height: 12),
             _buildInfoItem('• Monitors sensors for sudden impacts'),
+            _buildInfoItem('• ✅ Works in background (even when app closed)'),
+            _buildInfoItem('• ✅ Works when screen is off'),
             _buildInfoItem('• Automatically detects accidents'),
-            _buildInfoItem('• ✅ Works in background & screen off'),
             _buildInfoItem('• Sends SMS with GPS location'),
-            _buildInfoItem('• 📞 Automatically calls emergency contacts'),
+            _buildInfoItem('• 📞 Calls emergency contacts'),
             _buildInfoItem('• Includes Google Maps link'),
           ],
         ),

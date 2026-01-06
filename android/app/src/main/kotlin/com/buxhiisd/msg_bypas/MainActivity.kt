@@ -2,13 +2,16 @@
 package com.buxhiisd.msg_bypas
 
 import android.Manifest
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
+import android.provider.Settings
 import android.telephony.SmsManager
 import android.util.Log
 import android.view.WindowManager
@@ -22,13 +25,42 @@ class MainActivity : FlutterActivity() {
     private val CHANNEL = "com.buxhiisd.msg_bypas/alarm"
     private val SMS_CHANNEL = "com.buxhiisd.msg_bypas/sms"
     private val CALL_CHANNEL = "com.buxhiisd.msg_bypas/call"
+    private val SERVICE_CHANNEL = "com.buxhiisd.msg_bypas/service"
+
     private val SMS_PERMISSION_CODE = 123
     private val CALL_PERMISSION_CODE = 124
 
     private var wakeLock: PowerManager.WakeLock? = null
 
+    // BroadcastReceiver for background accident detection
+    private val accidentReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == "ACCIDENT_DETECTED_BACKGROUND") {
+                Log.d("MainActivity", "🚨 Received accident detection from background service")
+
+                // Notify Flutter
+                flutterEngine?.dartExecutor?.binaryMessenger?.let { messenger ->
+                    MethodChannel(messenger, CHANNEL).invokeMethod("onAccidentDetectedBackground", null)
+                }
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Register accident receiver
+        val filter = IntentFilter("ACCIDENT_DETECTED_BACKGROUND")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(accidentReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(accidentReceiver, filter)
+        }
+
+        // Check if launched from background accident detection
+        if (intent?.getBooleanExtra("accident_detected", false) == true) {
+            Log.d("MainActivity", "🚨 App launched due to accident detection")
+        }
 
         // Keep screen on when alarm is triggered
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
@@ -45,6 +77,11 @@ class MainActivity : FlutterActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        try {
+            unregisterReceiver(accidentReceiver)
+        } catch (e: Exception) {
+            Log.e("MainActivity", "Error unregistering receiver: ${e.message}")
+        }
         wakeLock?.let {
             if (it.isHeld) {
                 it.release()
@@ -54,6 +91,28 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+
+        // Service Channel - NEW
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, SERVICE_CHANNEL).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "startMonitoringService" -> {
+                    startMonitoringService()
+                    result.success(true)
+                }
+                "stopMonitoringService" -> {
+                    stopMonitoringService()
+                    result.success(true)
+                }
+                "isBatteryOptimized" -> {
+                    result.success(isBatteryOptimized())
+                }
+                "requestIgnoreBatteryOptimization" -> {
+                    requestIgnoreBatteryOptimization()
+                    result.success(true)
+                }
+                else -> result.notImplemented()
+            }
+        }
 
         // SMS Channel
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, SMS_CHANNEL).setMethodCallHandler { call, result ->
@@ -78,7 +137,7 @@ class MainActivity : FlutterActivity() {
             }
         }
 
-        // Call Channel (NEW)
+        // Call Channel
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CALL_CHANNEL).setMethodCallHandler { call, result ->
             when (call.method) {
                 "makeCall" -> {
@@ -127,7 +186,6 @@ class MainActivity : FlutterActivity() {
                     val prefs = getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
                     val userSafe = prefs.getBoolean("user_safe_pressed", false)
                     if (userSafe) {
-                        // Reset the flag
                         prefs.edit().putBoolean("user_safe_pressed", false).apply()
                         result.success(true)
                     } else {
@@ -139,7 +197,45 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    // CALL METHODS (NEW)
+    // SERVICE METHODS - NEW
+    private fun startMonitoringService() {
+        val serviceIntent = Intent(this, AccidentMonitoringService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(serviceIntent)
+        } else {
+            startService(serviceIntent)
+        }
+        Log.d("MainActivity", "✅ Background monitoring service started")
+    }
+
+    private fun stopMonitoringService() {
+        val serviceIntent = Intent(this, AccidentMonitoringService::class.java)
+        stopService(serviceIntent)
+        Log.d("MainActivity", "⏸️ Background monitoring service stopped")
+    }
+
+    private fun isBatteryOptimized(): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+            return !powerManager.isIgnoringBatteryOptimizations(packageName)
+        }
+        return false
+    }
+
+    private fun requestIgnoreBatteryOptimization() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            try {
+                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                    data = Uri.parse("package:$packageName")
+                }
+                startActivity(intent)
+            } catch (e: Exception) {
+                Log.e("MainActivity", "Error opening battery optimization settings: ${e.message}")
+            }
+        }
+    }
+
+    // CALL METHODS
     private fun hasCallPermission(): Boolean {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             ContextCompat.checkSelfPermission(
@@ -187,7 +283,6 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun startAlarmService(duration: Int) {
-        // Clear any previous "user safe" flag
         val prefs = getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
         prefs.edit().putBoolean("user_safe_pressed", false).apply()
 
@@ -227,7 +322,7 @@ class MainActivity : FlutterActivity() {
                     PowerManager.ACQUIRE_CAUSES_WAKEUP,
             "EmergencyApp:WakeLock"
         )
-        wakeLock?.acquire(10 * 60 * 1000L) // 10 minutes
+        wakeLock?.acquire(10 * 60 * 1000L)
 
         Log.d("MainActivity", "✅ Screen turned on")
     }

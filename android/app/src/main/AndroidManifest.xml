@@ -3,6 +3,7 @@
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
     <uses-permission android:name="android.permission.DISABLE_KEYGUARD"/>
@@ -26,6 +27,7 @@
 
     <!-- Background and Foreground Service Permissions -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <!-- Internet for sending via alternate methods if SMS fails -->
     <uses-permission android:name="android.permission.INTERNET" />
@@ -34,7 +36,7 @@
     <!-- Sounds like alarm-->
     <uses-permission android:name="android.permission.VIBRATE"/>
 
-    <!-- Sounds like alarm-->
+    <!-- Phone call -->
     <uses-permission android:name="android.permission.CALL_PHONE"/>
 
     <uses-feature android:name="android.hardware.telephony" android:required="false" />
@@ -50,6 +52,16 @@
             android:name=".AlarmActionReceiver"
             android:exported="false" />
 
+        <!-- Boot Receiver to restart service after reboot -->
+        <receiver
+            android:name=".BootReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
 
         <activity
             android:name=".MainActivity"
@@ -88,14 +100,18 @@
             android:exported="false"
             android:foregroundServiceType="location" />
 
-        <!-- NEW: Alarm Foreground Service for Background Countdown -->
+        <!-- Alarm Foreground Service - FIXED TYPE -->
         <service
             android:name=".AlarmForegroundService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="phoneCall"/>
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="emergency_alarm" />
+        </service>
 
-        <!-- Foreground Service for Background Monitoring -->
+        <!-- Background Accident Monitoring Service - THIS IS CRITICAL -->
         <service
             android:name=".AccidentMonitoringService"
             android:enabled="true"

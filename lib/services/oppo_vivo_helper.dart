@@ -139,9 +139,10 @@ class OppoVivoHelper {
     if (man.contains('oppo') || man.contains('realme')) {
       return '''
 OPPO/Realme Setup:
-1. Go to Settings > Battery > App Battery Management
-2. Find this app and select "Don't optimize"
-3. Go to Settings > Privacy > Auto-start
+
+1. Long press > Go to app info > 
+2. Open battery > select "Don't optimize" or "Run in background"
+3. Go to app info  > Permissions > Allow all
 4. Enable auto-start for this app
 5. Lock app in Recent Apps (tap app card and lock icon)
       ''';

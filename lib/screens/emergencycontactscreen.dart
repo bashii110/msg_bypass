@@ -126,7 +126,7 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Emergency Contacts'),
+        title: const Text('Rescue Me'),
         centerTitle: true,
       ),
       body: _isLoading
@@ -136,9 +136,9 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen> {
           : _buildContactsList(),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _addContact,
-        icon: const Icon(Icons.person_add),
-        label: const Text('Add Contact'),
-        backgroundColor: Colors.green,
+        icon: const Icon(Icons.person_add, color: Colors.white,),
+        label: const Text('Add Contact',style: TextStyle(color: Colors.white),),
+        backgroundColor: Colors.blue.shade700,
       ),
     );
   }
@@ -176,8 +176,8 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen> {
             const SizedBox(height: 32),
             ElevatedButton.icon(
               onPressed: _addContact,
-              icon: const Icon(Icons.person_add),
-              label: const Text('Add Your First Contact'),
+              icon: const Icon(Icons.person_add, color: Colors.blue,),
+              label: const Text('Add Your First Contact',style: TextStyle(color: Colors.blue), ),
               style: ElevatedButton.styleFrom(
                 padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
               ),

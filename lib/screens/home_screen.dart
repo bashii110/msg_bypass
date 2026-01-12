@@ -647,15 +647,15 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         title: const Text('Rescue Me'),
         centerTitle: true,
         backgroundColor: Colors.blueAccent,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.settings),
-            onPressed: () async {
-              await Navigator.push(context, MaterialPageRoute(builder: (_) => const SettingsScreen()));
-              _loadSettings();
-            },
-          ),
-        ],
+        // actions: [
+        //   IconButton(
+        //     icon: const Icon(Icons.settings),
+        //     onPressed: () async {
+        //       await Navigator.push(context, MaterialPageRoute(builder: (_) => const SettingsScreen()));
+        //       _loadSettings();
+        //     },
+        //   ),
+        // ],
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
@@ -666,8 +666,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             const SizedBox(height: 16),
             _buildStatusCard(),
             const SizedBox(height: 16),
-            _buildEmergencyContactCard(),
-            const SizedBox(height: 16),
+            // _buildEmergencyContactCard(),
+            // const SizedBox(height: 16),
             _buildTestModeCard(),
             const SizedBox(height: 16),
             _buildInfoCard(),
@@ -677,11 +677,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _isLoading ? null : _sendManualAlert,
-        backgroundColor: Colors.red,
+        backgroundColor: Colors.blue.shade700,
         icon: _isLoading
             ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-            : const Icon(Icons.emergency),
-        label: const Text('SEND SOS'),
+            : const Icon(Icons.location_on, color: Colors.white,),
+        label: const Text('SEND SOS',style: TextStyle(color: Colors.white),),
       ),
     );
   }
@@ -762,40 +762,40 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     );
   }
 
-  Widget _buildEmergencyContactCard() {
-    return FutureBuilder<int>(
-      future: _getContactCount(),
-      builder: (context, snapshot) {
-        final contactCount = snapshot.data ?? 0;
-        return Card(
-          elevation: 2,
-          child: ListTile(
-            leading: CircleAvatar(
-              backgroundColor: contactCount > 0 ? Colors.green : Colors.orange,
-              child: Text('$contactCount', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-            ),
-            title: Text(contactCount > 0 ? '$contactCount Contact${contactCount > 1 ? 's' : ''}' : 'No Contacts',
-                style: const TextStyle(fontWeight: FontWeight.bold)),
-            subtitle: Text(contactCount > 0 ? 'Will receive alerts' : 'Tap to add'),
-            trailing: const Icon(Icons.arrow_forward_ios),
-            onTap: () async {
-              await Navigator.push(context, MaterialPageRoute(builder: (_) => const EmergencyContactsScreen()));
-              setState(() {});
-            },
-          ),
-        );
-      },
-    );
-  }
+  // Widget _buildEmergencyContactCard() {
+  //   return FutureBuilder<int>(
+  //     future: _getContactCount(),
+  //     builder: (context, snapshot) {
+  //       final contactCount = snapshot.data ?? 0;
+  //       return Card(
+  //         elevation: 2,
+  //         child: ListTile(
+  //           leading: CircleAvatar(
+  //             backgroundColor: contactCount > 0 ? Colors.green : Colors.orange,
+  //             child: Text('$contactCount', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+  //           ),
+  //           title: Text(contactCount > 0 ? '$contactCount Contact${contactCount > 1 ? 's' : ''}' : 'No Contacts',
+  //               style: const TextStyle(fontWeight: FontWeight.bold)),
+  //           subtitle: Text(contactCount > 0 ? 'Will receive alerts' : 'Tap to add'),
+  //           trailing: const Icon(Icons.arrow_forward_ios),
+  //           onTap: () async {
+  //             await Navigator.push(context, MaterialPageRoute(builder: (_) => const EmergencyContactsScreen()));
+  //             setState(() {});
+  //           },
+  //         ),
+  //       );
+  //     },
+  //   );
+  // }
 
-  Future<int> _getContactCount() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      return (prefs.getStringList('emergency_contacts') ?? []).length;
-    } catch (e) {
-      return 0;
-    }
-  }
+  // Future<int> _getContactCount() async {
+  //   try {
+  //     final prefs = await SharedPreferences.getInstance();
+  //     return (prefs.getStringList('emergency_contacts') ?? []).length;
+  //   } catch (e) {
+  //     return 0;
+  //   }
+  // }
 
   Widget _buildTestModeCard() {
     return Card(
@@ -806,11 +806,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
+            const Row(
               children: [
-                const Icon(Icons.info_outline, color: Colors.orange),
-                const SizedBox(width: 8),
-                const Text("Detection Thresholds:",
+                 Icon(Icons.info_outline, color: Colors.orange),
+                 SizedBox(width: 8),
+                 Text("Detection Thresholds:",
                     style: TextStyle(fontWeight: FontWeight.bold, color: Colors.orange)),
               ],
             ),
@@ -822,20 +822,23 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             const Text("✅ Background service keeps monitoring even when app is closed!",
                 style: TextStyle(fontWeight: FontWeight.bold, color: Colors.green, fontSize: 12)),
             const SizedBox(height: 10),
-            ElevatedButton.icon(
-              onPressed: () async {
-                print("🧪 Testing alarm sound...");
-                await _startAlarm();
-                await Future.delayed(const Duration(seconds: 3));
-                await _stopAlarm();
-              },
-              icon: const Icon(Icons.volume_up, size: 20),
-              label: const Text('TEST ALARM SOUND'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.blue,
-                foregroundColor: Colors.white,
-              ),
-            ),
+
+            //Test Alarm sound
+
+            // ElevatedButton.icon(
+            //   onPressed: () async {
+            //     print("🧪 Testing alarm sound...");
+            //     await _startAlarm();
+            //     await Future.delayed(const Duration(seconds: 3));
+            //     await _stopAlarm();
+            //   },
+            //   icon: const Icon(Icons.volume_up, size: 20),
+            //   label: const Text('TEST ALARM SOUND'),
+            //   style: ElevatedButton.styleFrom(
+            //     backgroundColor: Colors.blue,
+            //     foregroundColor: Colors.white,
+            //   ),
+            // ),
           ],
         ),
       ),

@@ -12,8 +12,6 @@ class SetupScreen extends StatefulWidget {
 }
 
 class _SetupScreenState extends State<SetupScreen> {
-  final TextEditingController _phoneController = TextEditingController();
-  final TextEditingController _nameController = TextEditingController();
   bool _isLoading = false;
   int _currentStep = 0;
   bool _isRestrictedDevice = false;
@@ -23,13 +21,6 @@ class _SetupScreenState extends State<SetupScreen> {
   void initState() {
     super.initState();
     _checkDevice();
-  }
-
-  @override
-  void dispose() {
-    _phoneController.dispose();
-    _nameController.dispose();
-    super.dispose();
   }
 
   Future<void> _checkDevice() async {
@@ -53,7 +44,8 @@ class _SetupScreenState extends State<SetupScreen> {
         if (_isRestrictedDevice) {
           _showRestrictedDeviceDialog();
         } else {
-          setState(() => _currentStep = 1);
+          // Skip to completion since no contact required
+          _completeSetup();
         }
       } else {
         _showErrorDialog('Permissions Required',
@@ -119,7 +111,7 @@ class _SetupScreenState extends State<SetupScreen> {
           TextButton(
             onPressed: () {
               Navigator.of(ctx).pop();
-              setState(() => _currentStep = 1);
+              _completeSetup();
             },
             child: const Text('I\'ll Do It Later'),
           ),
@@ -132,14 +124,14 @@ class _SetupScreenState extends State<SetupScreen> {
 
               if (!opened) {
                 // Fallback to app settings
-                const packageName = 'com.buxhiisd.msg_bypas'; // Replace with your package
+                const packageName = 'com.buxhiisd.msg_bypas';
                 await OppoVivoHelper.openAppSettings(packageName);
               }
 
-              // Move to next step after showing settings
+              // Complete setup after showing settings
               Future.delayed(const Duration(seconds: 1), () {
                 if (mounted) {
-                  setState(() => _currentStep = 1);
+                  _completeSetup();
                 }
               });
             },
@@ -154,27 +146,15 @@ class _SetupScreenState extends State<SetupScreen> {
   }
 
   Future<void> _completeSetup() async {
-    if (_phoneController.text.isEmpty) {
-      _showErrorDialog('Error', 'Please enter an emergency contact number');
-      return;
-    }
-
-    if (_nameController.text.isEmpty) {
-      _showErrorDialog('Error', 'Please enter the contact name');
-      return;
-    }
-
     setState(() => _isLoading = true);
 
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('emergency_number', _phoneController.text);
-      await prefs.setString('emergency_name', _nameController.text);
       await prefs.setBool('is_setup', true);
 
       // Request battery optimization exemption for restricted devices
       if (_isRestrictedDevice) {
-        const packageName = 'com.buxhiisd.msg_bypas'; // Replace with your package
+        const packageName = 'com.buxhiisd.msg_bypas';
         await OppoVivoHelper.requestBatteryOptimizationExemption(packageName);
       }
 
@@ -184,7 +164,7 @@ class _SetupScreenState extends State<SetupScreen> {
         MaterialPageRoute(builder: (_) => const HomeScreen()),
       );
     } catch (e) {
-      _showErrorDialog('Error', 'Failed to save settings: $e');
+      _showErrorDialog('Error', 'Failed to complete setup: $e');
     } finally {
       setState(() => _isLoading = false);
     }
@@ -210,7 +190,7 @@ class _SetupScreenState extends State<SetupScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Setup Emergency SMS'),
+        title: const Text('Setup Rescue Me'),
         centerTitle: true,
       ),
       body: Column(
@@ -239,145 +219,129 @@ class _SetupScreenState extends State<SetupScreen> {
               ),
             ),
           Expanded(
-            child: Stepper(
-              currentStep: _currentStep,
-              onStepContinue: () {
-                if (_currentStep == 0) {
-                  _requestPermissions();
-                } else if (_currentStep == 1) {
-                  _completeSetup();
-                }
-              },
-              onStepCancel: () {
-                if (_currentStep > 0) {
-                  setState(() => _currentStep--);
-                }
-              },
-              controlsBuilder: (context, details) {
-                return Padding(
-                  padding: const EdgeInsets.only(top: 16),
-                  child: Row(
-                    children: [
-                      ElevatedButton(
-                        onPressed: _isLoading ? null : details.onStepContinue,
-                        child: _isLoading
-                            ? const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                            : Text(_currentStep == 1 ? 'Complete' : 'Continue'),
+            child: Center(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Icon(
+                      Icons.emergency,
+                      size: 100,
+                      color: Theme.of(context).primaryColor,
+                    ),
+                    const SizedBox(height: 24),
+                    const Text(
+                      'Welcome to Rescue Me',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 28,
+                        fontWeight: FontWeight.bold,
                       ),
-                      const SizedBox(width: 8),
-                      if (_currentStep > 0)
-                        TextButton(
-                          onPressed: _isLoading ? null : details.onStepCancel,
-                          child: const Text('Back'),
-                        ),
-                    ],
-                  ),
-                );
-              },
-              steps: [
-                Step(
-                  title: const Text('Permissions'),
-                  content: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'This app requires the following permissions to function:',
-                        style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 16),
+                    const Text(
+                      'Automatic accident detection and emergency alerts',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 16,
+                        color: Colors.grey,
                       ),
-                      const SizedBox(height: 16),
-                      _buildPermissionTile(
-                        Icons.sms,
-                        'SMS',
-                        'Send emergency messages',
-                      ),
-                      _buildPermissionTile(
-                        Icons.location_on,
-                        'Location',
-                        'Share your location in emergencies',
-                      ),
-                      _buildPermissionTile(
-                        Icons.notifications,
-                        'Notifications',
-                        'Alert you of app status',
-                      ),
-                      _buildPermissionTile(
-                        Icons.phone,
-                        'Phone',
-                        'Access phone state',
-                      ),
-                    ],
-                  ),
-                  isActive: _currentStep >= 0,
-                  state: _currentStep > 0 ? StepState.complete : StepState.indexed,
-                ),
-                Step(
-                  title: const Text('Emergency Contact'),
-                  content: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'Enter the phone number that will receive emergency alerts:',
-                        style: TextStyle(fontWeight: FontWeight.bold),
-                      ),
-                      const SizedBox(height: 16),
-                      TextField(
-                        controller: _nameController,
-                        decoration: InputDecoration(
-                          labelText: 'Contact Name',
-                          hintText: 'e.g., Mom, Dad, Emergency Contact',
-                          prefixIcon: const Icon(Icons.person),
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      TextField(
-                        controller: _phoneController,
-                        keyboardType: TextInputType.phone,
-                        decoration: InputDecoration(
-                          labelText: 'Phone Number',
-                          hintText: '+923001234567',
-                          prefixIcon: const Icon(Icons.phone),
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: Colors.amber.shade50,
-                          border: Border.all(color: Colors.amber.shade300),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Row(
+                    ),
+                    const SizedBox(height: 48),
+                    Card(
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Icon(Icons.info_outline, color: Colors.amber.shade700),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: Text(
-                                'This number will receive automatic SMS alerts when an accident is detected.',
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  color: Colors.amber.shade900,
-                                ),
+                            const Text(
+                              'Required Permissions:',
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 16,
                               ),
+                            ),
+                            const SizedBox(height: 16),
+                            _buildPermissionTile(
+                              Icons.sms,
+                              'SMS',
+                              'Send emergency messages',
+                            ),
+                            _buildPermissionTile(
+                              Icons.location_on,
+                              'Location',
+                              'Share your location in emergencies',
+                            ),
+                            _buildPermissionTile(
+                              Icons.phone,
+                              'Phone',
+                              'Make emergency calls',
+                            ),
+                            _buildPermissionTile(
+                              Icons.mic,
+                              'Microphone',
+                              'Detect loud noises (accidents)',
+                            ),
+                            _buildPermissionTile(
+                              Icons.notifications,
+                              'Notifications',
+                              'Alert you of app status',
                             ),
                           ],
                         ),
                       ),
-                    ],
-                  ),
-                  isActive: _currentStep >= 1,
-                  state: _currentStep > 1 ? StepState.complete : StepState.indexed,
+                    ),
+                    const SizedBox(height: 24),
+                    SizedBox(
+                      height: 56,
+                      child: ElevatedButton.icon(
+                        onPressed: _isLoading ? null : _requestPermissions,
+                        icon: _isLoading
+                            ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            color: Colors.white,
+                            strokeWidth: 2,
+                          ),
+                        )
+                            : const Icon(Icons.check_circle),
+                        label: Text(
+                          _isLoading ? 'Setting up...' : 'Grant Permissions & Continue',
+                          style: const TextStyle(fontSize: 16),
+                        ),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Theme.of(context).primaryColor,
+                          foregroundColor: Colors.white,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.blue.shade50,
+                        border: Border.all(color: Colors.blue.shade200),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(Icons.info_outline, color: Colors.blue.shade700),
+                          const SizedBox(width: 12),
+                          const Expanded(
+                            child: Text(
+                              'You can add emergency contacts later from the home screen.',
+                              style: TextStyle(fontSize: 12),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
                 ),
-              ],
+              ),
             ),
           ),
         ],
@@ -386,11 +350,36 @@ class _SetupScreenState extends State<SetupScreen> {
   }
 
   Widget _buildPermissionTile(IconData icon, String title, String subtitle) {
-    return ListTile(
-      leading: Icon(icon, color: Theme.of(context).primaryColor),
-      title: Text(title),
-      subtitle: Text(subtitle),
-      contentPadding: EdgeInsets.zero,
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Row(
+        children: [
+          Icon(icon, color: Theme.of(context).primaryColor, size: 28),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 14,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  subtitle,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: Colors.grey,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

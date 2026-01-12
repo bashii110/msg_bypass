@@ -11,15 +11,11 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
-  final TextEditingController _phoneController = TextEditingController();
-  final TextEditingController _nameController = TextEditingController();
-  bool _isLoading = false;
   Map<String, bool> _permissions = {};
 
   @override
   void initState() {
     super.initState();
-    _loadSettings();
     _checkPermissions();
     _checkAndShowDeviceSetup();
   }
@@ -41,54 +37,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  @override
-  void dispose() {
-    _phoneController.dispose();
-    _nameController.dispose();
-    super.dispose();
-  }
-
-  Future<void> _loadSettings() async {
-    final prefs = await SharedPreferences.getInstance();
-    setState(() {
-      _phoneController.text = prefs.getString('emergency_number') ?? '';
-      _nameController.text = prefs.getString('emergency_name') ?? '';
-    });
-  }
-
   Future<void> _checkPermissions() async {
     final permissions = await PermissionService.checkAllPermissions();
     setState(() => _permissions = permissions);
-  }
-
-  Future<void> _saveSettings() async {
-    if (_phoneController.text.isEmpty) {
-      _showSnackBar('Please enter a phone number', Colors.red);
-      return;
-    }
-
-    if (_nameController.text.isEmpty) {
-      _showSnackBar('Please enter a contact name', Colors.red);
-      return;
-    }
-
-    setState(() => _isLoading = true);
-
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('emergency_number', _phoneController.text);
-      await prefs.setString('emergency_name', _nameController.text);
-
-      _showSnackBar('Settings saved successfully', Colors.green);
-
-      Future.delayed(const Duration(seconds: 1), () {
-        if (mounted) Navigator.of(context).pop();
-      });
-    } catch (e) {
-      _showSnackBar('Error saving settings: $e', Colors.red);
-    } finally {
-      setState(() => _isLoading = false);
-    }
   }
 
   void _showSnackBar(String message, Color color) {
@@ -167,7 +118,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
               if (!opened) {
                 // Fallback to app settings
-                const packageName = 'com.buxhiisd.msg_bypas'; // Replace with your actual package
+                const packageName = 'com.buxhiisd.msg_bypas';
                 await OppoVivoHelper.openAppSettings(packageName);
               }
             },
@@ -186,7 +137,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Settings'),
+        title: const Text('Rescue Me'),
         centerTitle: true,
       ),
       body: SingleChildScrollView(
@@ -200,26 +151,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ],
         ),
       ),
-      bottomNavigationBar: Padding(
-        padding: const EdgeInsets.all(16),
-        child: ElevatedButton(
-          onPressed: _isLoading ? null : _saveSettings,
-          style: ElevatedButton.styleFrom(
-            padding: const EdgeInsets.symmetric(vertical: 16),
-          ),
-          child: _isLoading
-              ? const SizedBox(
-            height: 20,
-            width: 20,
-            child: CircularProgressIndicator(strokeWidth: 2),
-          )
-              : const Text('Save Changes'),
-        ),
-      ),
     );
   }
-
-
 
   Widget _buildPermissionsSection() {
     return Card(
@@ -262,7 +195,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
             _buildPermissionTile(
               'Phone',
-              'Required to access phone state',
+              'Required to access phone state and make calls',
               _permissions['phone'] ?? false,
               Icons.phone,
             ),
@@ -271,6 +204,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
               'Required for app alerts',
               _permissions['notification'] ?? false,
               Icons.notifications,
+            ),
+            _buildPermissionTile(
+              'Microphone',
+              'Required for noise detection',
+              _permissions['microphone'] ?? false,
+              Icons.mic,
             ),
             const SizedBox(height: 16),
             SizedBox(
@@ -328,7 +267,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
             const SizedBox(height: 16),
             const Text(
-              'Emergency SMS App',
+              'Rescue Me - Emergency Alert App',
               style: TextStyle(
                 fontSize: 16,
                 fontWeight: FontWeight.bold,
@@ -338,7 +277,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             const Text('Version 1.0.0'),
             const SizedBox(height: 16),
             const Text(
-              'This app automatically detects accidents using device sensors and sends emergency alerts with your location to your emergency contact.',
+              'This app automatically detects accidents using device sensors and sends emergency alerts with your location to your emergency contacts. So please keep your location on during travel.',
               style: TextStyle(fontSize: 13),
             ),
             const SizedBox(height: 16),
@@ -398,7 +337,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       const SizedBox(height: 8),
                       ElevatedButton.icon(
                         onPressed: () async {
-                          const packageName = 'com.buxhiisd.msg_bypas'; // Replace with your actual package
+                          const packageName = 'com.buxhiisd.msg_bypas';
                           await OppoVivoHelper.requestBatteryOptimizationExemption(packageName);
                         },
                         icon: const Icon(Icons.battery_charging_full),

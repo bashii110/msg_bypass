@@ -1,5 +1,6 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:msg_bypas/screens/main_screen.dart';
 import 'package:msg_bypas/screens/setup_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -27,7 +28,7 @@ class _SplashScreenState extends State<SplashScreen> {
     if (mounted) {
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(
-          builder: (_) => isSetup ? const HomeScreen() : const SetupScreen(),
+          builder: (_) => isSetup ? const MainScreen() : const SetupScreen(),
         ),
       );
     }

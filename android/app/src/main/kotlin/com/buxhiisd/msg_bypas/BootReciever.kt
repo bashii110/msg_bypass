@@ -6,28 +6,57 @@ import android.content.Intent
 import android.os.Build
 import android.util.Log
 
+/**
+ * FIXED: Now reads from correct SharedPreferences location
+ * Restarts the background monitoring service after device reboot
+ */
 class BootReceiver : BroadcastReceiver() {
-    override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action == Intent.ACTION_BOOT_COMPLETED ||
-            intent.action == "android.intent.action.QUICKBOOT_POWERON") {
 
-            Log.d("BootReceiver", "📱 Device booted - checking if monitoring was enabled")
+    override fun onReceive(context: Context?, intent: Intent?) {
+        context ?: return
 
-            // Check if monitoring was previously enabled
-            val prefs = context.getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
-            val wasMonitoring = prefs.getBoolean("flutter.monitoring_enabled", false)
+        Log.d("BootReceiver", "📱 Boot completed, action: ${intent?.action}")
 
-            if (wasMonitoring) {
-                Log.d("BootReceiver", "✅ Monitoring was enabled - restarting service")
+        when (intent?.action) {
+            Intent.ACTION_BOOT_COMPLETED,
+            Intent.ACTION_LOCKED_BOOT_COMPLETED,
+            "android.intent.action.QUICKBOOT_POWERON",
+            "com.htc.intent.action.QUICKBOOT_POWERON" -> {
 
-                val serviceIntent = Intent(context, AccidentMonitoringService::class.java)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    context.startForegroundService(serviceIntent)
+                // FIXED: Check BOTH SharedPreferences locations
+                // Flutter stores in "FlutterSharedPreferences"
+                val flutterPrefs = context.getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+                val flutterMonitoring = flutterPrefs.getBoolean("flutter.monitoring_enabled", false)
+
+                // Native stores in "app_prefs"
+                val nativePrefs = context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+                val nativeMonitoring = nativePrefs.getBoolean("monitoring_enabled", false)
+
+                val wasMonitoring = flutterMonitoring || nativeMonitoring
+
+                Log.d("BootReceiver", "Flutter monitoring: $flutterMonitoring")
+                Log.d("BootReceiver", "Native monitoring: $nativeMonitoring")
+                Log.d("BootReceiver", "Final decision: $wasMonitoring")
+
+                if (wasMonitoring) {
+                    Log.d("BootReceiver", "✅ Monitoring was enabled - restarting service")
+
+                    val serviceIntent = Intent(context, AccidentMonitoringService::class.java)
+
+                    try {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            context.startForegroundService(serviceIntent)
+                        } else {
+                            context.startService(serviceIntent)
+                        }
+
+                        Log.d("BootReceiver", "✅ Service restarted successfully after boot")
+                    } catch (e: Exception) {
+                        Log.e("BootReceiver", "❌ Failed to restart service: ${e.message}")
+                    }
                 } else {
-                    context.startService(serviceIntent)
+                    Log.d("BootReceiver", "⏸️ Monitoring was disabled - not starting service")
                 }
-            } else {
-                Log.d("BootReceiver", "⏸️ Monitoring was disabled - not starting service")
             }
         }
     }

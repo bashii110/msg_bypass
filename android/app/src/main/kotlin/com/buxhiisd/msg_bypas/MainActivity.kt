@@ -1,6 +1,7 @@
 package com.buxhiisd.msg_bypas
 
 import android.Manifest
+import android.app.AlertDialog
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -33,11 +34,9 @@ class MainActivity : FlutterActivity() {
 
     private var wakeLock: PowerManager.WakeLock? = null
 
-    // SMS delivery tracking
     private val SMS_SENT = "SMS_SENT"
     private val SMS_DELIVERED = "SMS_DELIVERED"
 
-    // Track SMS send results
     private val smsSendResults = mutableMapOf<String, Boolean>()
 
     private val smsSentReceiver = object : BroadcastReceiver() {
@@ -92,7 +91,17 @@ class MainActivity : FlutterActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Register SMS receivers
+        registerReceivers()
+        checkAndShowOPPOSetupIfNeeded()
+
+        if (intent?.getBooleanExtra("accident_detected", false) == true) {
+            Log.d("MainActivity", "🚨 App launched due to accident detection")
+        }
+
+        setupScreenFlags()
+    }
+
+    private fun registerReceivers() {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 registerReceiver(smsSentReceiver, IntentFilter(SMS_SENT), Context.RECEIVER_NOT_EXPORTED)
@@ -106,15 +115,9 @@ class MainActivity : FlutterActivity() {
         } catch (e: Exception) {
             Log.e("MainActivity", "Error registering receivers: ${e.message}")
         }
+    }
 
-        // REMOVED: checkManufacturerAndRequestPermissions()
-        // Don't automatically request permissions on app launch
-        // Let Flutter handle when to show these
-
-        if (intent?.getBooleanExtra("accident_detected", false) == true) {
-            Log.d("MainActivity", "🚨 App launched due to accident detection")
-        }
-
+    private fun setupScreenFlags() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(true)
             setTurnScreenOn(true)
@@ -124,6 +127,26 @@ class MainActivity : FlutterActivity() {
                 WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
                         WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
             )
+        }
+    }
+
+    private fun checkAndShowOPPOSetupIfNeeded() {
+        val manufacturer = Build.MANUFACTURER.lowercase()
+        val isChineseOEM = manufacturer.contains("oppo") ||
+                manufacturer.contains("realme") ||
+                manufacturer.contains("vivo") ||
+                manufacturer.contains("xiaomi")
+
+        if (isChineseOEM) {
+            val prefs = getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+            val setupShown = prefs.getBoolean("oppo_setup_shown", false)
+
+            if (!setupShown) {
+                android.os.Handler(mainLooper).postDelayed({
+                    showOPPOSetupGuide()
+                    prefs.edit().putBoolean("oppo_setup_shown", true).apply()
+                }, 2000)
+            }
         }
     }
 
@@ -141,78 +164,6 @@ class MainActivity : FlutterActivity() {
                 it.release()
             }
         }
-    }
-
-    // FIXED: Only open settings when explicitly requested by user
-    private fun requestAutoStartPermission() {
-        try {
-            val manufacturer = Build.MANUFACTURER.lowercase()
-            Log.d("SMS", "📱 Requesting autostart for: $manufacturer")
-
-            val intent = when {
-                manufacturer.contains("vivo") -> {
-                    Intent().apply {
-                        component = android.content.ComponentName(
-                            "com.vivo.permissionmanager",
-                            "com.vivo.permissionmanager.activity.BgStartUpManagerActivity"
-                        )
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                }
-                manufacturer.contains("oppo") || manufacturer.contains("realme") -> {
-                    Intent().apply {
-                        component = android.content.ComponentName(
-                            "com.coloros.safecenter",
-                            "com.coloros.safecenter.permission.startup.StartupAppListActivity"
-                        )
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                }
-                manufacturer.contains("xiaomi") || manufacturer.contains("redmi") -> {
-                    Intent().apply {
-                        component = android.content.ComponentName(
-                            "com.miui.securitycenter",
-                            "com.miui.permcenter.autostart.AutoStartManagementActivity"
-                        )
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                }
-                manufacturer.contains("huawei") -> {
-                    Intent().apply {
-                        component = android.content.ComponentName(
-                            "com.huawei.systemmanager",
-                            "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity"
-                        )
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                }
-                else -> {
-                    // For other manufacturers, open app settings
-                    Log.d("SMS", "⚠️ Unknown manufacturer, opening app settings")
-                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                        data = Uri.parse("package:$packageName")
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                }
-            }
-
-            try {
-                startActivity(intent)
-                Log.d("SMS", "✅ Opened autostart/settings")
-            } catch (e: Exception) {
-                Log.e("SMS", "❌ Failed to open autostart: ${e.message}")
-                // Don't fallback to app settings automatically
-                // Let the user know via Flutter
-                showToast("Unable to open autostart settings. Please enable manually in Settings → Apps.")
-            }
-
-        } catch (e: Exception) {
-            Log.e("SMS", "❌ Error in requestAutoStartPermission: ${e.message}")
-        }
-    }
-
-    private fun showToast(message: String) {
-        android.widget.Toast.makeText(this, message, android.widget.Toast.LENGTH_LONG).show()
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -246,6 +197,14 @@ class MainActivity : FlutterActivity() {
                 }
                 "isChineseOEM" -> {
                     result.success(isChineseOEM())
+                }
+                "showOPPOSetup" -> {
+                    showOPPOSetupGuide()
+                    result.success(true)
+                }
+                "openOPPOSettings" -> {
+                    openOPPOBatterySettings()
+                    result.success(true)
                 }
                 else -> result.notImplemented()
             }
@@ -360,6 +319,233 @@ class MainActivity : FlutterActivity() {
                 manufacturer.contains("huawei")
     }
 
+    private fun showOPPOSetupGuide() {
+        val manufacturer = Build.MANUFACTURER.lowercase()
+        val deviceName = when {
+            manufacturer.contains("oppo") || manufacturer.contains("realme") -> "OPPO/ColorOS"
+            manufacturer.contains("vivo") -> "Vivo"
+            manufacturer.contains("xiaomi") -> "Xiaomi/MIUI"
+            else -> "Chinese OEM"
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("⚠️ $deviceName Critical Setup")
+            .setMessage("""
+                🔴 CRITICAL: Your phone will kill this app after 3-4 days!
+                
+                ✅ REQUIRED STEPS (Do ALL of these):
+                
+                ═══════════════════════════════════
+                
+                1️⃣ DISABLE BATTERY OPTIMIZATION
+                
+                Method A:
+                • Settings → Battery
+                • Tap (⋮) three dots → Special access
+                • Battery optimization
+                • Find "Rescue Me"
+                • Select "Don't optimize"
+                
+                Method B:
+                • Settings → Apps → Rescue Me
+                • Battery → Battery optimization
+                • Don't optimize
+                
+                ═══════════════════════════════════
+                
+                2️⃣ LOCK APP IN RECENT APPS
+                
+                • Open Recent Apps (square button)
+                • Find "Rescue Me" card
+                • Pull down OR tap lock icon 🔒
+                • Must show lock icon!
+                
+                ═══════════════════════════════════
+                
+                3️⃣ ALLOW ALL PERMISSIONS
+                
+                • Settings → Apps → Rescue Me
+                • Permissions → Allow ALL
+                • Especially: SMS, Phone, Location
+                
+                ═══════════════════════════════════
+                
+                4️⃣ BACKGROUND ACTIVITY
+                
+                • Settings → Apps → Rescue Me
+                • Battery → Background activity
+                • Allow or No restrictions
+                
+                ═══════════════════════════════════
+                
+                ⚠️ Skip ANY step = App STOPS working!
+            """.trimIndent())
+            .setPositiveButton("Open Settings") { _, _ ->
+                openOPPOBatterySettings()
+            }
+            .setNeutralButton("Show Steps Again") { _, _ ->
+                showOPPOSetupGuide()
+            }
+            .setNegativeButton("Later") { dialog, _ ->
+                showToast("⚠️ App will stop working after 3-4 days without setup!")
+                dialog.dismiss()
+            }
+            .setCancelable(false)
+            .show()
+    }
+
+    private fun openOPPOBatterySettings() {
+        val manufacturer = Build.MANUFACTURER.lowercase()
+
+        val intents = when {
+            manufacturer.contains("oppo") || manufacturer.contains("realme") -> listOf(
+                // Method 1: Direct to app's battery settings
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                    data = Uri.parse("package:$packageName")
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                },
+
+                // Method 2: Battery Optimization Settings (most reliable)
+                Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                },
+
+                // Method 3: Request Ignore Battery Optimization
+                Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                    data = Uri.parse("package:$packageName")
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                },
+
+                // Method 4: ColorOS Power Manager
+                Intent().apply {
+                    component = android.content.ComponentName(
+                        "com.coloros.safecenter",
+                        "com.coloros.safecenter.permission.startup.StartupAppListActivity"
+                    )
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                },
+
+                // Method 5: ColorOS Settings
+                Intent().apply {
+                    component = android.content.ComponentName(
+                        "com.coloros.safecenter",
+                        "com.coloros.safecenter.permission.PermissionManagerActivity"
+                    )
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                },
+
+                // Method 6: OPPO Guard Elf (older ColorOS)
+                Intent().apply {
+                    component = android.content.ComponentName(
+                        "com.coloros.oppoguardelf",
+                        "com.coloros.powermanager.fuelgaue.PowerUsageModelActivity"
+                    )
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+            )
+            manufacturer.contains("vivo") -> listOf(
+                Intent().apply {
+                    component = android.content.ComponentName(
+                        "com.vivo.permissionmanager",
+                        "com.vivo.permissionmanager.activity.BgStartUpManagerActivity"
+                    )
+                },
+                Intent().apply {
+                    component = android.content.ComponentName(
+                        "com.iqoo.secure",
+                        "com.iqoo.secure.ui.phoneoptimize.BgStartUpManager"
+                    )
+                }
+            )
+            manufacturer.contains("xiaomi") || manufacturer.contains("redmi") -> listOf(
+                Intent().apply {
+                    component = android.content.ComponentName(
+                        "com.miui.securitycenter",
+                        "com.miui.permcenter.autostart.AutoStartManagementActivity"
+                    )
+                },
+                Intent().apply {
+                    component = android.content.ComponentName(
+                        "com.miui.powerkeeper",
+                        "com.miui.powerkeeper.ui.HiddenAppsConfigActivity"
+                    )
+                }
+            )
+            else -> emptyList()
+        }
+
+        // Try each intent in order - first one that works wins
+        var opened = false
+        for ((index, intent) in intents.withIndex()) {
+            try {
+                startActivity(intent)
+                opened = true
+                Log.d("OPPO", "✅ Opened settings with method ${index + 1}")
+
+                // Show helpful toast based on which method worked
+                when (index) {
+                    0 -> showToast("✅ Opening app settings.\n\nGo to:\n• Battery → Unrestricted\n• Permissions → Allow all")
+                    1 -> showToast("✅ Opening battery settings.\n\nFind 'Rescue Me' and set to 'Not optimized'")
+                    2 -> showToast("✅ Select 'Rescue Me' and tap 'Allow' to disable battery optimization")
+                    else -> showToast("✅ Find 'Rescue Me' in the list and enable all permissions")
+                }
+                break
+            } catch (e: Exception) {
+                Log.e("OPPO", "Method ${index + 1} failed: ${e.message}")
+                continue
+            }
+        }
+
+        if (!opened) {
+            // All methods failed - show manual instructions
+            showManualInstructions()
+        }
+    }
+
+    private fun showManualInstructions() {
+        AlertDialog.Builder(this)
+            .setTitle("⚠️ Manual Setup Required")
+            .setMessage("""
+                Your ColorOS version requires manual setup:
+                
+                📱 Step-by-Step:
+                
+                1️⃣ Settings → Battery
+                   → More (3 dots) → Special access
+                   → Battery optimization
+                   → Find "Rescue Me"
+                   → Select "Don't optimize"
+                
+                2️⃣ Settings → Apps
+                   → Rescue Me
+                   → Battery → Battery optimization
+                   → Don't optimize
+                
+                3️⃣ Recent Apps (square button)
+                   → Find "Rescue Me" card
+                   → Pull down to LOCK 🔒
+                
+                Without these, app stops after 3-4 days!
+            """.trimIndent())
+            .setPositiveButton("I'll Do It") { dialog, _ ->
+                dialog.dismiss()
+            }
+            .setNeutralButton("Try Again") { _, _ ->
+                openOPPOBatterySettings()
+            }
+            .show()
+    }
+
+    private fun requestAutoStartPermission() {
+        openOPPOBatterySettings()
+    }
+
+    private fun showToast(message: String) {
+        runOnUiThread {
+            android.widget.Toast.makeText(this, message, android.widget.Toast.LENGTH_LONG).show()
+        }
+    }
+
     private fun openAppSettings() {
         try {
             val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
@@ -374,6 +560,15 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun startMonitoringService() {
+        // CRITICAL: Save to BOTH SharedPreferences locations
+        // Native for BootReceiver
+        val nativePrefs = getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+        nativePrefs.edit().putBoolean("monitoring_enabled", true).apply()
+
+        // Flutter location (in case Flutter reads from here)
+        val flutterPrefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+        flutterPrefs.edit().putBoolean("flutter.monitoring_enabled", true).apply()
+
         val serviceIntent = Intent(this, AccidentMonitoringService::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(serviceIntent)
@@ -381,12 +576,21 @@ class MainActivity : FlutterActivity() {
             startService(serviceIntent)
         }
         Log.d("MainActivity", "✅ Background monitoring service started")
+        Log.d("MainActivity", "✅ Saved monitoring state to BOTH SharedPreferences")
     }
 
     private fun stopMonitoringService() {
+        // CRITICAL: Save to BOTH SharedPreferences locations
+        val nativePrefs = getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+        nativePrefs.edit().putBoolean("monitoring_enabled", false).apply()
+
+        val flutterPrefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+        flutterPrefs.edit().putBoolean("flutter.monitoring_enabled", false).apply()
+
         val serviceIntent = Intent(this, AccidentMonitoringService::class.java)
         stopService(serviceIntent)
         Log.d("MainActivity", "⏸️ Background monitoring service stopped")
+        Log.d("MainActivity", "✅ Saved monitoring state to BOTH SharedPreferences")
     }
 
     private fun isBatteryOptimized(): Boolean {
@@ -406,6 +610,12 @@ class MainActivity : FlutterActivity() {
                 startActivity(intent)
             } catch (e: Exception) {
                 Log.e("MainActivity", "Error opening battery optimization settings: ${e.message}")
+                // Fallback to general battery settings
+                try {
+                    startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                } catch (e2: Exception) {
+                    Log.e("MainActivity", "Fallback also failed: ${e2.message}")
+                }
             }
         }
     }
@@ -491,7 +701,6 @@ class MainActivity : FlutterActivity() {
         Log.d("MainActivity", "✅ Screen turned on")
     }
 
-    // SMS Methods
     private fun hasSmsPermission(): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return true
 

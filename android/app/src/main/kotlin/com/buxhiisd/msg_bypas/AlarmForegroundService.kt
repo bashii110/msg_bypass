@@ -1,4 +1,3 @@
-// android/app/src/main/kotlin/com/buxhiisd/msg_bypas/AlarmForegroundService.kt
 package com.buxhiisd.msg_bypas
 
 import android.app.*
@@ -9,6 +8,7 @@ import android.content.IntentFilter
 import android.os.Build
 import android.os.CountDownTimer
 import android.os.IBinder
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 
 class AlarmForegroundService : Service() {
@@ -16,14 +16,14 @@ class AlarmForegroundService : Service() {
     private var countDownTimer: CountDownTimer? = null
     private var remainingSeconds = 30
     private var isUserSafe = false
+    private var wakeLock: PowerManager.WakeLock? = null
 
     companion object {
-        private const val CHANNEL_ID = "emergency_alarm_channel_silent_v2"  // Changed to force recreation
+        private const val CHANNEL_ID = "emergency_alarm_channel_silent_v2"
         private const val NOTIFICATION_ID = 1001
         const val ACTION_USER_SAFE = "com.buxhiisd.msg_bypas.ACTION_USER_SAFE"
     }
 
-    // BroadcastReceiver to handle "I'm Safe" button click
     private val userSafeReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action == ACTION_USER_SAFE) {
@@ -38,13 +38,12 @@ class AlarmForegroundService : Service() {
     override fun onCreate() {
         super.onCreate()
 
-        // Delete old notification channels with sound
-        deleteOldChannels()
+        // Acquire wake lock to keep screen on
+        acquireWakeLock()
 
-        // Create new silent channel
+        deleteOldChannels()
         createNotificationChannel()
 
-        // Register receiver for "I'm Safe" button
         val filter = IntentFilter(ACTION_USER_SAFE)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(userSafeReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
@@ -55,11 +54,25 @@ class AlarmForegroundService : Service() {
         println("✅ AlarmForegroundService created and receiver registered")
     }
 
+    private fun acquireWakeLock() {
+        try {
+            val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+            wakeLock = powerManager.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "RescueMe::AlarmWakeLock"
+            ).apply {
+                acquire(10 * 60 * 1000L) // 10 minutes max
+            }
+            println("✅ Wake lock acquired for alarm")
+        } catch (e: Exception) {
+            println("❌ Failed to acquire wake lock: ${e.message}")
+        }
+    }
+
     private fun deleteOldChannels() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
-            // List of old channel IDs to delete
             val oldChannels = listOf(
                 "emergency_alarm_channel",
                 "alarm_countdown_channel",
@@ -84,10 +97,7 @@ class AlarmForegroundService : Service() {
 
         println("🚨 Starting alarm service with $duration seconds countdown")
 
-        // Start foreground with initial notification
         startForeground(NOTIFICATION_ID, createNotification(remainingSeconds))
-
-        // Start countdown
         startCountdown(duration)
 
         return START_NOT_STICKY
@@ -97,15 +107,17 @@ class AlarmForegroundService : Service() {
         println("✅ Handling user safe in service")
         isUserSafe = true
 
-        // Save to SharedPreferences
-        val prefs = getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
-        prefs.edit().putBoolean("user_safe_pressed", true).apply()
+        // Save to BOTH SharedPreferences locations
+        val nativePrefs = getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+        nativePrefs.edit().putBoolean("user_safe_pressed", true).apply()
 
-        // Send broadcast to Flutter
+        val flutterPrefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+        flutterPrefs.edit().putBoolean("flutter.user_safe_pressed", true).apply()
+
         sendBroadcast(Intent("USER_SAFE_ACTION"))
 
-        // Stop countdown and service
         countDownTimer?.cancel()
+        releaseWakeLock()
         stopForeground(true)
         stopSelf()
     }
@@ -125,18 +137,24 @@ class AlarmForegroundService : Service() {
 
                 remainingSeconds = (millisUntilFinished / 1000).toInt()
 
-                // Check SharedPreferences in case user pressed from MainActivity
-                val prefs = getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
-                if (prefs.getBoolean("user_safe_pressed", false)) {
+                // Check BOTH SharedPreferences locations
+                val nativePrefs = getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+                val flutterPrefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+
+                val nativeSafe = nativePrefs.getBoolean("user_safe_pressed", false)
+                val flutterSafe = flutterPrefs.getBoolean("flutter.user_safe_pressed", false)
+
+                if (nativeSafe || flutterSafe) {
                     println("✅ User safe detected via SharedPreferences")
                     isUserSafe = true
-                    prefs.edit().putBoolean("user_safe_pressed", false).apply()
+                    nativePrefs.edit().putBoolean("user_safe_pressed", false).apply()
+                    flutterPrefs.edit().putBoolean("flutter.user_safe_pressed", false).apply()
                     cancel()
+                    releaseWakeLock()
                     stopSelf()
                     return
                 }
 
-                // Update notification with countdown
                 val notification = createNotification(remainingSeconds)
                 val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                 notificationManager.notify(NOTIFICATION_ID, notification)
@@ -149,6 +167,7 @@ class AlarmForegroundService : Service() {
                     println("⏰ Countdown finished - triggering emergency")
                     sendCompletionBroadcast()
                 }
+                releaseWakeLock()
                 stopSelf()
             }
         }.start()
@@ -158,7 +177,6 @@ class AlarmForegroundService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
-            // Delete old channel if it exists
             try {
                 notificationManager.deleteNotificationChannel("emergency_alarm_channel")
                 println("🗑️ Deleted old notification channel")
@@ -172,7 +190,6 @@ class AlarmForegroundService : Service() {
 
             val channel = NotificationChannel(CHANNEL_ID, name, importance).apply {
                 description = descriptionText
-                // CRITICAL: Set sound to null for silent notification
                 setSound(null, null)
                 enableVibration(true)
                 vibrationPattern = longArrayOf(0, 500, 200, 500)
@@ -185,7 +202,6 @@ class AlarmForegroundService : Service() {
     }
 
     private fun createNotification(seconds: Int): Notification {
-        // Create broadcast intent for "I'm Safe" button
         val userSafeBroadcastIntent = Intent(ACTION_USER_SAFE)
         val userSafePendingIntent = PendingIntent.getBroadcast(
             this,
@@ -194,7 +210,6 @@ class AlarmForegroundService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        // Create intent to open app when notification is tapped
         val contentIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }
@@ -225,7 +240,6 @@ class AlarmForegroundService : Service() {
                 userSafePendingIntent
             )
             .setVibrate(longArrayOf(0, 500, 200, 500))
-            // NO SOUND - Sound plays from Flutter app only
             .setSound(null)
             .build()
     }
@@ -233,6 +247,15 @@ class AlarmForegroundService : Service() {
     private fun sendCompletionBroadcast() {
         val intent = Intent("COUNTDOWN_COMPLETE")
         sendBroadcast(intent)
+    }
+
+    private fun releaseWakeLock() {
+        wakeLock?.let {
+            if (it.isHeld) {
+                it.release()
+                println("✅ Wake lock released")
+            }
+        }
     }
 
     override fun onDestroy() {
@@ -243,6 +266,7 @@ class AlarmForegroundService : Service() {
             println("Error unregistering receiver: ${e.message}")
         }
         countDownTimer?.cancel()
+        releaseWakeLock()
         println("✅ AlarmForegroundService destroyed")
     }
 }

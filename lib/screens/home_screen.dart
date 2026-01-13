@@ -394,7 +394,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       await _audioPlayer.setVolume(1.0);
 
       await _audioPlayer.setAudioContext(
-        AudioContext(
+        const AudioContext(
           iOS: AudioContextIOS(
             category: AVAudioSessionCategory.playback,
             options: [AVAudioSessionOptions.mixWithOthers],
